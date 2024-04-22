@@ -36,3 +36,7 @@ poetry run python setup.py py2app
 ![image](https://github.com/hsol/jaso/assets/1524891/e0fbc577-507d-44b6-a532-10e698dbd55a)
 
 ![image](https://github.com/hsol/jaso/assets/1524891/6a7a0b96-a263-44ea-82fa-54264aefa1cc)
+
+
+https://github.com/hsol/jaso/assets/1524891/67e1994b-a43d-4c8d-bf66-05993ec9ef29
+
