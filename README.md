@@ -1,6 +1,8 @@
 # 자소
 mac OSX 사용자들을 위한 한글 자소분리 방지 앱
 
+Python 3.11
+
 ## 앱 초기설정
 ```
 pip install poetry
