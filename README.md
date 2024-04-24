@@ -6,6 +6,7 @@ Python 3.11
 ## 앱 초기설정
 ```
 pip install poetry
+poetry shell
 poetry install
 ```
 
