@@ -1,7 +1,7 @@
 # 자소
 mac OSX 사용자들을 위한 한글 자소분리 방지 앱
 
-Python 3.11
+`Python 3.11`
 
 ## 앱 초기설정
 ### poetry(python 패키지 매니저) 설치
@@ -14,7 +14,7 @@ brew install poetry
 ```
 ### 패키지 설치
 ```
-poetry shell
+poetry env activate
 poetry install
 ```
 
