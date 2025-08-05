@@ -2,6 +2,9 @@ import os
 import unicodedata
 import subprocess
 
+# macOS 경고 메시지 숨기기
+os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES'
+
 import rumps
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -95,22 +98,21 @@ class JasoRumpsApp(rumps.App):
                 self.menu["자동변환 시작"].title = "자동변환 시작"
                 rumps.alert(message="이미 실행 중이던 작업을 중단했습니다.", icon_path=self.icon_path)
             
-            # macOS의 기본 폴더 선택 다이얼로그 사용
-            script = '''
-            tell application "System Events"
-                activate
-                set folderPath to choose folder with prompt "한글 자소분리를 방지할 폴더를 선택해주세요."
-                return POSIX path of folderPath
-            end tell
-            '''
+            # rumps를 통해 AppKit에 접근하여 네이티브 폴더 선택 다이얼로그 사용
+            import objc
+            from Foundation import NSURL
+            from AppKit import NSOpenPanel, NSOKButton
             
-            try:
-                result = subprocess.run(['osascript', '-e', script], 
-                                      capture_output=True, text=True, timeout=30)
-                directory_path = result.stdout.strip()
-            except subprocess.TimeoutExpired:
-                directory_path = ""
-            except Exception:
+            panel = NSOpenPanel.openPanel()
+            panel.setCanChooseFiles_(False)
+            panel.setCanChooseDirectories_(True)
+            panel.setAllowsMultipleSelection_(False)
+            panel.setTitle_("폴더 선택")
+            panel.setMessage_("한글 자소분리를 방지할 폴더를 선택해주세요.")
+            
+            if panel.runModal() == NSOKButton:
+                directory_path = panel.URLs()[0].path()
+            else:
                 directory_path = ""
             
             if directory_path:

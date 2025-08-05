@@ -14,9 +14,9 @@ OPTIONS = {
         'CFBundleShortVersionString': '0.0.1',
         'NSHighResolutionCapable': True,
     },
-    'packages': ['rumps', 'watchdog'],
+    'packages': ['rumps', 'watchdog', 'AppKit', 'Foundation', 'objc'],
     'includes': ['os', 'unicodedata', 'subprocess', 'imp'],
-    'excludes': ['tkinter', 'matplotlib', 'numpy', 'scipy'],
+    'excludes': ['matplotlib', 'numpy', 'scipy'],
 }
 
 setup(
