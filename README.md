@@ -21,7 +21,7 @@ brew install poetry
 ### 패키지 설치
 
 ```
-poetry env activate
+eval $(poetry env activate)
 poetry install
 ```
 
