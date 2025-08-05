@@ -1,5 +1,6 @@
 import os
 import unicodedata
+import subprocess
 
 import rumps
 from watchdog.events import FileSystemEventHandler
@@ -83,30 +84,57 @@ class JasoRumpsApp(rumps.App):
 
         self.watcher: Watcher | None = None
         self.icon_path = icon_path
+        self.watched_directory = None
 
     @rumps.clicked("자동변환 시작")
     def _start(self, _):
         try:
             if self.watcher:
                 self.watcher.stop()
+                self.watched_directory = None
+                self.menu["자동변환 시작"].title = "자동변환 시작"
                 rumps.alert(message="이미 실행 중이던 작업을 중단했습니다.", icon_path=self.icon_path)
-            window = rumps.Window(title="자소", message="한글 자소분리를 방지할 폴더 주소를 입력해주세요.", dimensions=(200, 20))
-            window.icon = self.icon_path
-            response = window.run()
-            if response.clicked:
-                directory_path = response.text
+            
+            # macOS의 기본 폴더 선택 다이얼로그 사용
+            script = '''
+            tell application "System Events"
+                activate
+                set folderPath to choose folder with prompt "한글 자소분리를 방지할 폴더를 선택해주세요."
+                return POSIX path of folderPath
+            end tell
+            '''
+            
+            try:
+                result = subprocess.run(['osascript', '-e', script], 
+                                      capture_output=True, text=True, timeout=30)
+                directory_path = result.stdout.strip()
+            except subprocess.TimeoutExpired:
+                directory_path = ""
+            except Exception:
+                directory_path = ""
+            
+            if directory_path:
                 if not os.path.isdir(directory_path):
-                    rumps.alert("유효하지 않은 주소입니다.", icon_path=self.icon_path)
+                    rumps.alert("유효하지 않은 폴더입니다.", icon_path=self.icon_path)
                 else:
-                    rumps.alert("폴더 주소가 설정되었습니다. 이제부터 해당 폴더에서 자동으로 한글의 자소분리가 방지됩니다.", icon_path=self.icon_path)
-                    self.watcher = Watcher(response.text)
+                    # 버튼 텍스트 업데이트
+                    self.watched_directory = directory_path
+                    folder_name = os.path.basename(directory_path)
+                    self.menu["자동변환 시작"].title = f"새로시작 ({folder_name}에서 변환 중)"
+                    
+                    rumps.alert("폴더가 설정되었습니다. 이제부터 해당 폴더에서 자동으로 한글의 자소분리가 방지됩니다.", icon_path=self.icon_path)
+                    self.watcher = Watcher(directory_path)
                     self.watcher.run()
+            else:
+                rumps.alert("폴더를 선택하지 않았습니다.", icon_path=self.icon_path)
         except Exception as e:
             rumps.alert(f"오류: {str(e)}")
 
     @rumps.clicked("종료")
     def _quit(self, _):
-        self.watcher and self.watcher.stop()
+        if self.watcher:
+            self.watcher.stop()
+            self.watched_directory = None
         rumps.quit_application()
 
 

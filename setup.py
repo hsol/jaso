@@ -4,11 +4,19 @@ APP = ['main.py']
 DATA_FILES = []
 OPTIONS = {
     'iconfile': 'icon.icns',
-    'argv_emulation': True,
+    'argv_emulation': False,
     'plist': {
         'LSUIElement': True,
+        'CFBundleName': '자소',
+        'CFBundleDisplayName': '자소',
+        'CFBundleIdentifier': 'com.jaso.app',
+        'CFBundleVersion': '0.0.1',
+        'CFBundleShortVersionString': '0.0.1',
+        'NSHighResolutionCapable': True,
     },
-    'packages': ['rumps'],
+    'packages': ['rumps', 'watchdog'],
+    'includes': ['os', 'unicodedata', 'subprocess', 'imp'],
+    'excludes': ['tkinter', 'matplotlib', 'numpy', 'scipy'],
 }
 
 setup(
