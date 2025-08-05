@@ -33,18 +33,31 @@ poetry run python main.py
 
 ## 앱 빌드
 
+### 기본 앱 빌드
+
 ```bash
 ./build.sh
 ```
+
+### 설치 파일(DMG) 생성
+
+```bash
+./build_dmg.sh
+```
+
+생성된 DMG 파일을 더블클릭하여 마운트한 후, `자소.app`을 `Applications` 폴더로 드래그 앤 드롭하여 설치할 수 있습니다.
 
 ## 앱 사용하기
 
 ### 1. 앱 실행
 
-아직 앱을 패키징하지 못하여 코드를 다운로드 받아 빌드하여 사용하셔야 합니다.
+DMG 파일을 통해 설치한 후 Applications 폴더에서 `자소` 앱을 실행하거나, 개발 중이라면 다음 명령어로 실행할 수 있습니다:
+
+```bash
+poetry run python main.py
+```
 
 <img width="236" height="114" alt="image" src="https://github.com/user-attachments/assets/dbdc053e-9f8c-402b-9ffa-f83ab66879fc" />
-
 
 ### 2. 대상 폴더 선택
 
@@ -62,7 +75,6 @@ poetry run python main.py
 기본적으로 이전에 추가된 파일에 대해서는 변환을 진행하지 않습니다. 이 경우 "한번에 변환" 기능을 활용하여 변환할 수 있습니다.
 <img width="216" height="114" alt="image" src="https://github.com/user-attachments/assets/e3faa353-efcf-44e6-9183-d7a489c1ef31" />
 <img width="269" height="282" alt="image" src="https://github.com/user-attachments/assets/c703cc64-956a-4559-a08f-c009537d6d2d" />
-
 
 ### 4. 변환완료!
 
