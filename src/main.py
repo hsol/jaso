@@ -2,8 +2,15 @@ import os
 import plistlib
 import sys
 import unicodedata
+import webbrowser
 # macOS 경고 메시지 숨기기
 os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES'
+
+# py2app 번들의 stdout/stderr 기본 인코딩은 ASCII다. 이 앱의 로그와 경로는 대부분 한글이라
+# 그대로 두면 print 한 줄이 UnicodeEncodeError를 던진다. 여기서 한 번 UTF-8로 맞춰둔다.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, 'reconfigure'):
+        _stream.reconfigure(encoding='utf-8', errors='replace')
 
 import rumps
 from watchdog.events import FileSystemEventHandler
@@ -61,16 +68,26 @@ def normalize_path(path: str):
     os.rename(path, normalized_path)
 
 
+def normalize_quietly(path_type: str, path: str) -> bool:
+    # 한 경로의 실패가 나머지 순회를 멈추지 않도록, 오류는 로그만 남기고 삼킨다.
+    try:
+        normalize_path(path)
+        return True
+    except Exception as e:
+        print(f"{path_type} 처리 중 오류 발생: {path}, 오류: {e}")
+        return False
+
+
 def normalize_filenames_in_directory(directory):
     # 주어진 폴더와 그 하위 폴더에 있는 모든 파일의 이름을 NFC로 정규화합니다.
     processed_count = 0
-    
+
     # 모든 경로를 먼저 수집하여 상위 폴더 변경의 영향을 받지 않도록 함
     all_paths = []
 
-    # 일단 선택된 폴더부터 정규화
-    normalize_path(directory)
-    
+    # 일단 선택된 폴더부터 정규화 (실패해도 하위 순회는 계속한다)
+    normalize_quietly('dir', directory)
+
     # 깊이 우선으로 모든 경로를 수집 (가장 깊은 것부터 처리)
     for root, dirs, files in os.walk(directory, topdown=False):
         # 파일들을 먼저 수집
@@ -85,12 +102,9 @@ def normalize_filenames_in_directory(directory):
     
     # 수집된 경로들을 역순으로 처리 (가장 깊은 것부터)
     for path_type, path in reversed(all_paths):
-        try:
-            normalize_path(str(path))
+        if normalize_quietly(path_type, str(path)):
             processed_count += 1
-        except Exception as e:
-            print(f"{path_type} 처리 중 오류 발생: {path}, 오류: {e}")
-    
+
     return processed_count
 
 
@@ -131,12 +145,15 @@ class Handler(FileSystemEventHandler):
     # 파일 시스템 이벤트에 반응하여 적절한 조치를 취하는 이벤트 핸들러 클래스입니다.
     @staticmethod
     def on_any_event(event):
-        if event.event_type == 'created':
-            normalize_filenames_in_directory(event.src_path)
-        elif event.event_type == 'modified':
-            normalize_filenames_in_directory(event.src_path)
-        elif event.event_type == 'moved':
-            normalize_filenames_in_directory(event.dest_path)
+        # watchdog 감시 스레드로 예외가 빠져나가면 스레드가 죽어 감시가 조용히 멈춘다.
+        # 이벤트 처리 중 무슨 일이 나든 여기서 막는다.
+        try:
+            if event.event_type in ('created', 'modified'):
+                normalize_filenames_in_directory(event.src_path)
+            elif event.event_type == 'moved':
+                normalize_filenames_in_directory(event.dest_path)
+        except Exception as e:
+            print(f"이벤트 처리 중 오류 발생: {event.event_type} {event.src_path}, 오류: {e}")
 
 
 class JasoRumpsApp(rumps.App):
@@ -271,6 +288,12 @@ class JasoRumpsApp(rumps.App):
         except Exception as e:
             sender.state = autostart_enabled()
             rumps.alert(f"자동실행 설정 실패: {e}", icon_path=self.icon_path)
+
+    @rumps.clicked("도움말", "개발자 정보")
+    def _developer_info(self, _):
+        if not rumps.alert("개발자 정보", "임한솔\nmolmoty@gmail.com\nhttps://hsol.info",
+                           ok="확인", cancel="홈페이지 열기"):
+            webbrowser.open("https://hsol.info")
 
     @rumps.clicked("종료")
     def _quit(self, _):
