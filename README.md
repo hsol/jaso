@@ -28,7 +28,7 @@ poetry install
 ## 앱 개발
 
 ```
-poetry run python main.py
+poetry run python src/main.py
 ```
 
 ## 앱 빌드
@@ -36,13 +36,13 @@ poetry run python main.py
 ### 기본 앱 빌드
 
 ```bash
-./build.sh
+./scripts/build.sh
 ```
 
 ### 설치 파일(DMG) 생성
 
 ```bash
-./build_dmg.sh
+./scripts/build_dmg.sh
 ```
 
 생성된 DMG 파일을 더블클릭하여 마운트한 후, `자소.app`을 `Applications` 폴더로 드래그 앤 드롭하여 설치할 수 있습니다.
@@ -54,7 +54,7 @@ poetry run python main.py
 DMG 파일을 통해 설치한 후 Applications 폴더에서 `자소` 앱을 실행하거나, 개발 중이라면 다음 명령어로 실행할 수 있습니다:
 
 ```bash
-poetry run python main.py
+poetry run python src/main.py
 ```
 
 <img width="236" height="114" alt="image" src="https://github.com/user-attachments/assets/dbdc053e-9f8c-402b-9ffa-f83ab66879fc" />

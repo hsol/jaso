@@ -1,0 +1,56 @@
+# AGENTS.md
+
+## 프로젝트
+
+macOS 메뉴바 앱 "자소". 선택한 폴더를 감시하며 파일/폴더명 유니코드를 NFD → NFC로 정규화해 한글 자소분리를 막는다. Python 3.11 + rumps(메뉴바) + watchdog(파일감시), py2app으로 `.app` 빌드.
+
+전체 로직은 `src/main.py` 한 파일(약 200줄)에 있다. 모듈 분리 계획 없음 — 새 기능도 여기에 넣는다.
+
+## 구조
+
+```
+src/main.py           전부. 정규화 함수 + Watcher + Handler + JasoRumpsApp(메뉴바 UI)
+assets/icon.icns      메뉴바/번들 아이콘
+scripts/build.sh      py2app 빌드 → dist/자소.app
+scripts/build_dmg.sh  앱 빌드 + hdiutil로 DMG 생성
+setup.py              py2app 번들 설정 (plist, LSUIElement: True = Dock 아이콘 없음)
+pyproject.toml        Poetry 의존성 (package-mode = false)
+                      런타임: rumps, watchdog / dev: py2app, setuptools (빌드 전용)
+```
+
+`setup.py`·`pyproject.toml`·`poetry.lock`은 툴 관례상 루트 고정. 빌드 산출물(`build/`, `dist/`, `*.dmg`)도 루트에 생긴다.
+
+## 명령어
+
+```bash
+poetry install                   # 최초 1회
+poetry run python src/main.py    # 개발 실행 (메뉴바에 아이콘 등장)
+./scripts/build.sh               # 앱 빌드
+./scripts/build_dmg.sh           # 배포용 DMG
+```
+
+빌드 스크립트는 첫 줄에서 저장소 루트로 `cd`하므로 어디서 실행해도 된다.
+
+테스트 프레임워크 없음. 검증은 실제 실행 + 폴더에 NFD 이름 파일을 넣어 확인.
+
+## main.py 흐름
+
+1. `normalize_path(path)` — 이름만 NFC 정규화 후 `os.rename`. **길이 비교로 변경 필요 여부 판단** (NFD는 조합문자로 더 길다). 길이가 같으면 no-op.
+2. `normalize_filenames_in_directory(dir)` — `os.walk(topdown=False)`로 전 경로 수집 후 **역순(깊은 것부터) 처리**. 상위 폴더 rename이 하위 경로를 무효화하는 문제를 피하기 위한 것이니 순서를 바꾸지 말 것.
+3. `Handler.on_any_event` — created/modified/moved 이벤트마다 해당 경로를 정규화.
+4. `Watcher.run` — `Observer` 시작 + `rumps.Timer`로 1초마다 `observer.join(1)`. rumps 이벤트 루프와 watchdog 스레드를 공존시키기 위한 장치.
+
+## 주의사항
+
+- **AppKit import는 `if __name__ == "__main__":` 블록 안에서** 한다 (`src/main.py` 끝). 모듈 상단으로 올리면 py2app 번들에서 초기화 순서 문제가 난다. `NSOpenPanel` 등은 `_select_directory`에서 그 전역 이름을 참조한다.
+- `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`를 rumps import 전에 설정한다 (`src/main.py:4`). 순서 유지.
+- `ICON_PATH`는 두 실행 환경을 모두 커버한다: 번들에서는 cwd가 `Contents/Resources`라 `icon.icns`가 그대로 잡히고, 개발 실행에서는 `assets/icon.icns`로 폴백한다. 아이콘 위치를 옮기면 `setup.py`의 `iconfile`·`DATA_FILES`와 함께 고쳐야 한다.
+- 메뉴 항목 제목이 곧 키다 (`self.menu["대상 폴더 선택"]`). 한글 문자열을 바꾸면 조회 코드도 같이 고쳐야 한다.
+- 버전이 세 곳에 흩어져 있다: `pyproject.toml`(0.1.0), `setup.py`의 `version`(0.0.1)과 `CFBundleShortVersionString`(0.1.0), `build_dmg.sh`의 `VERSION`. 릴리스 시 전부 맞출 것.
+- 파일명 조작 코드다. rename 실패는 `normalize_filenames_in_directory` 안에서 개별 `try/except`로 삼켜 로그만 남긴다 — 한 파일 실패가 전체 순회를 멈추지 않게 하는 의도이니 유지.
+
+## 코드 스타일
+
+- 주석·UI 문자열·커밋 메시지 모두 한국어.
+- 타입 힌트는 가벼운 수준(`Observer | None`)으로만.
+- 의존성 추가는 최소화. 현재 표준 라이브러리 + rumps + watchdog + py2app 계열이 전부다.

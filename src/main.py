@@ -7,6 +7,10 @@ import rumps
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+# 번들에서는 cwd가 Contents/Resources, 개발 실행에서는 저장소 assets/
+ICON_PATH = ('icon.icns' if os.path.exists('icon.icns')
+             else os.path.join(os.path.dirname(__file__), '..', 'assets', 'icon.icns'))
+
 
 def normalize_path(path: str):
     # 주어진 파일 경로의 이름을 NFC 유니코드 형식으로 정규화하고 파일명을 변경합니다.
@@ -101,11 +105,10 @@ class JasoRumpsApp(rumps.App):
     # macOS 메뉴바 앱을 위한 클래스입니다.
 
     def __init__(self, *args, **kwargs):
-        icon_path = "icon.icns"
-        super().__init__(name="자소", icon=icon_path, quit_button=None)
+        super().__init__(name="자소", icon=ICON_PATH, quit_button=None)
 
         self.watcher: Watcher | None = None
-        self.icon_path = icon_path
+        self.icon_path = ICON_PATH
         self.watched_directory = None
         self.convert_menu_item = None
 
