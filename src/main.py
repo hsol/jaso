@@ -1,4 +1,6 @@
 import os
+import plistlib
+import sys
 import unicodedata
 # macOS 경고 메시지 숨기기
 os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES'
@@ -10,6 +12,39 @@ from watchdog.observers import Observer
 # 번들에서는 cwd가 Contents/Resources, 개발 실행에서는 저장소 assets/
 ICON_PATH = ('icon.icns' if os.path.exists('icon.icns')
              else os.path.join(os.path.dirname(__file__), '..', 'assets', 'icon.icns'))
+
+AUTOSTART_LABEL = 'tech.proofer.jaso'
+AUTOSTART_PLIST = os.path.expanduser(f'~/Library/LaunchAgents/{AUTOSTART_LABEL}.plist')
+
+
+def launch_arguments():
+    # 번들에서 sys.executable 은 Contents/MacOS/python (앱 실행파일이 아님) 이므로 쓸 수 없다.
+    # __file__ 이 <앱>.app/Contents/Resources/main.py 라는 점을 이용해 .app 경로를 되짚고 open 으로 띄운다.
+    if getattr(sys, 'frozen', None) == 'macosx_app':
+        bundle = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+        return ['/usr/bin/open', bundle]
+    return [sys.executable, os.path.abspath(__file__)]
+
+
+def autostart_enabled(plist_path: str = AUTOSTART_PLIST) -> bool:
+    return os.path.exists(plist_path)
+
+
+def set_autostart(enabled: bool, plist_path: str = AUTOSTART_PLIST):
+    # launchd가 로그인 시 ~/Library/LaunchAgents를 읽으므로 plist 존재 여부만 관리하면 된다.
+    # ponytail: launchctl load/unload 생략 — "로그인 시 실행"만 필요하고 즉시 기동은 필요 없음
+    if not enabled:
+        if os.path.exists(plist_path):
+            os.remove(plist_path)
+        return
+
+    os.makedirs(os.path.dirname(plist_path), exist_ok=True)
+    with open(plist_path, 'wb') as f:
+        plistlib.dump({
+            'Label': AUTOSTART_LABEL,
+            'ProgramArguments': launch_arguments(),
+            'RunAtLoad': True,
+        }, f)
 
 
 def normalize_path(path: str):
@@ -166,7 +201,7 @@ class JasoRumpsApp(rumps.App):
                     # 한번에 변환 메뉴 추가
                     if self.convert_menu_item is None:
                         self.convert_menu_item = rumps.MenuItem("한번에 변환", callback=self._convert_once)
-                        self.menu.insert_before("종료", self.convert_menu_item)
+                        self.menu.insert_before("로그인 시 자동실행", self.convert_menu_item)
                     
                     rumps.alert("폴더가 설정되었습니다. 이제부터 해당 폴더에서 자동으로 한글의 자소분리가 방지됩니다.", icon_path=self.icon_path)
                     self.watcher = Watcher(directory_path)
@@ -193,6 +228,20 @@ class JasoRumpsApp(rumps.App):
         except Exception as e:
             rumps.alert(f"오류: {str(e)}")
 
+    @rumps.events.before_start
+    def _sync_autostart_state(self):
+        # 메뉴는 run() 시점에 만들어지므로 __init__ 이 아니라 여기서 체크 상태를 맞춘다.
+        self.menu["로그인 시 자동실행"].state = autostart_enabled()
+
+    @rumps.clicked("로그인 시 자동실행")
+    def _toggle_autostart(self, sender):
+        try:
+            sender.state = 0 if sender.state else 1
+            set_autostart(bool(sender.state))
+        except Exception as e:
+            sender.state = autostart_enabled()
+            rumps.alert(f"자동실행 설정 실패: {e}", icon_path=self.icon_path)
+
     @rumps.clicked("종료")
     def _quit(self, _):
         if self.watcher:
@@ -202,7 +251,33 @@ class JasoRumpsApp(rumps.App):
         rumps.quit_application()
 
 
+def _selfcheck():
+    # 자동실행 plist 쓰기/읽기/삭제 왕복 검증: poetry run python src/main.py --selfcheck
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        plist = os.path.join(tmp, 'LaunchAgents', f'{AUTOSTART_LABEL}.plist')
+        assert not autostart_enabled(plist)
+
+        set_autostart(True, plist)
+        assert autostart_enabled(plist)
+        with open(plist, 'rb') as f:
+            data = plistlib.load(f)
+        assert data['Label'] == AUTOSTART_LABEL
+        assert data['RunAtLoad'] is True
+        for arg in data['ProgramArguments']:
+            assert os.path.exists(arg), data['ProgramArguments']
+
+        set_autostart(False, plist)
+        assert not autostart_enabled(plist)
+        set_autostart(False, plist)  # 두 번 꺼도 예외 없음
+    print('OK:', launch_arguments())
+
+
 if __name__ == "__main__":
+    if '--selfcheck' in sys.argv:
+        _selfcheck()
+        raise SystemExit
+
     from AppKit import NSOpenPanel, NSOKButton, NSApplication, NSModalPanelWindowLevel
     app = JasoRumpsApp()
     app.run()

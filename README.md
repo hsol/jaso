@@ -70,13 +70,19 @@ poetry run python src/main.py
 
 <img width="271" height="220" alt="image" src="https://github.com/user-attachments/assets/77d569a5-53eb-4ba8-802c-6c9a3148b99f" />
 
-### 3. 한번에 변환
+### 3. 로그인 시 자동실행
+
+메뉴에서 "로그인 시 자동실행"을 클릭하면 체크 표시가 켜지고, 다음 로그인부터 앱이 자동으로 실행됩니다. 다시 클릭하면 해제됩니다.
+
+내부적으로는 `~/Library/LaunchAgents/tech.proofer.jaso.plist`를 만들거나 지우는 방식이며, 앱을 다른 위치로 옮겼다면 체크를 껐다 다시 켜주세요.
+
+### 4. 한번에 변환
 
 기본적으로 이전에 추가된 파일에 대해서는 변환을 진행하지 않습니다. 이 경우 "한번에 변환" 기능을 활용하여 변환할 수 있습니다.
 <img width="216" height="114" alt="image" src="https://github.com/user-attachments/assets/e3faa353-efcf-44e6-9183-d7a489c1ef31" />
 <img width="269" height="282" alt="image" src="https://github.com/user-attachments/assets/c703cc64-956a-4559-a08f-c009537d6d2d" />
 
-### 4. 변환완료!
+### 5. 변환완료!
 
 ![image](https://github.com/hsol/jaso/assets/1524891/6a7a0b96-a263-44ea-82fa-54264aefa1cc)
 

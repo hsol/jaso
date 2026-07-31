@@ -31,6 +31,11 @@ poetry run python src/main.py    # 개발 실행 (메뉴바에 아이콘 등장)
 
 빌드 스크립트는 첫 줄에서 저장소 루트로 `cd`하므로 어디서 실행해도 된다.
 
+```bash
+poetry run python src/main.py --selfcheck                    # 자동실행 plist 왕복 검증 (개발)
+PYTHONIOENCODING=utf-8 "dist/자소.app/Contents/MacOS/자소" --selfcheck   # 번들 경로 분기 검증
+```
+
 테스트 프레임워크 없음. 검증은 실제 실행 + 폴더에 NFD 이름 파일을 넣어 확인.
 
 ## main.py 흐름
@@ -39,6 +44,17 @@ poetry run python src/main.py    # 개발 실행 (메뉴바에 아이콘 등장)
 2. `normalize_filenames_in_directory(dir)` — `os.walk(topdown=False)`로 전 경로 수집 후 **역순(깊은 것부터) 처리**. 상위 폴더 rename이 하위 경로를 무효화하는 문제를 피하기 위한 것이니 순서를 바꾸지 말 것.
 3. `Handler.on_any_event` — created/modified/moved 이벤트마다 해당 경로를 정규화.
 4. `Watcher.run` — `Observer` 시작 + `rumps.Timer`로 1초마다 `observer.join(1)`. rumps 이벤트 루프와 watchdog 스레드를 공존시키기 위한 장치.
+5. 로그인 시 자동실행 — `~/Library/LaunchAgents/tech.proofer.jaso.plist`의 **존재 여부**가 곧 on/off. `launchctl load/unload`는 쓰지 않는다(로그인 시 실행만 필요). 메뉴 체크 상태는 `@rumps.events.before_start` 훅에서 맞춘다 — rumps는 `run()` 시점에 메뉴를 만들기 때문에 `__init__`에서는 `self.menu[...]`가 아직 없다.
+
+## 번들 런타임의 함정 (실측)
+
+py2app 번들 안에서 값들이 개발 실행과 다르다. 추측하지 말고 확인할 것:
+
+- `sys.executable` = `<앱>.app/Contents/MacOS/python` — **앱 실행파일이 아니다.** 앱을 다시 띄우려면 `__file__`(`Contents/Resources/main.py`)에서 `../..`로 `.app` 경로를 되짚어 `/usr/bin/open <bundle>`을 쓴다 (`launch_arguments()`).
+- `sys.frozen == 'macosx_app'`, `os.getcwd()` = `Contents/Resources`.
+- **기본 인코딩이 ASCII다.** 한글이 든 텍스트를 기본 인코딩으로 쓰면 `UnicodeEncodeError`. 파일은 `'wb'` + `plistlib`(UTF-8 XML)로 쓰거나 `encoding='utf-8'`을 명시할 것.
+  - 알려진 잠재 버그: `normalize_filenames_in_directory`의 `print(f"{path_type} 처리 중 오류...")`가 번들에서 터질 수 있다. rename 실패 시 감시 스레드가 조용히 죽는다. 아직 미수정.
+- 번들 디버깅은 `open`이 아니라 실행파일을 직접 돌려 stderr를 본다: `"dist/자소.app/Contents/MacOS/자소"`.
 
 ## 주의사항
 
