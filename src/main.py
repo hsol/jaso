@@ -68,13 +68,23 @@ def normalize_path(path: str):
     os.rename(path, normalized_path)
 
 
+# rename이 영구적으로 실패하는 경로(읽기 전용 폴더 안의 NFD 파일 등)를 계속 재시도하면
+# 실패한 rename이 다시 이벤트를 유발해 순회가 무한 반복된다. 한 번 실패한 경로는 건너뛴다.
+# 권한을 고친 뒤에는 "한번에 변환"이 이 목록을 비우므로 다시 시도할 수 있다.
+# ponytail: 락 없음 — 멤버십 검사/추가/clear 뿐이라 GIL 아래에서 충분하다
+_failed_paths: set[str] = set()
+
+
 def normalize_quietly(path_type: str, path: str) -> bool:
     # 한 경로의 실패가 나머지 순회를 멈추지 않도록, 오류는 로그만 남기고 삼킨다.
+    if path in _failed_paths:
+        return False
     try:
         normalize_path(path)
         return True
     except Exception as e:
-        print(f"{path_type} 처리 중 오류 발생: {path}, 오류: {e}")
+        _failed_paths.add(path)
+        print(f"{path_type} 처리 중 오류 발생(이후 건너뜀): {path}, 오류: {e}")
         return False
 
 
@@ -186,6 +196,7 @@ class JasoRumpsApp(rumps.App):
 
     def _start_watching(self, directory_path):
         # 폴더 선택과 시작 시 자동 복원이 공유하는 경로
+        _failed_paths.clear()  # 새 감시 시작이면 지난 실패 기록은 무효
         self.watched_directory = directory_path
         folder_name = os.path.basename(directory_path)
         self.menu["대상 폴더 선택"].title = f"다시선택 ({folder_name}에서 변환 중)"
@@ -263,10 +274,14 @@ class JasoRumpsApp(rumps.App):
                 rumps.alert("선택된 폴더가 더 이상 유효하지 않습니다.", icon_path=self.icon_path)
                 return
             
+            # 수동 실행은 재시도 기회다 — 권한을 고쳤을 수 있으니 실패 기록을 비우고 다시 훑는다
+            _failed_paths.clear()
+
             # 선택된 폴더 내 모든 파일과 폴더명을 한번에 변환
             processed_count = normalize_filenames_in_directory(self.watched_directory)
             folder_name = os.path.basename(self.watched_directory)
-            rumps.alert(f"변환 완료!\n\n폴더: {folder_name}\n처리된 항목 수: {processed_count}개\n\n모든 파일과 폴더명이 NFD에서 NFC로 변환되었습니다.", icon_path=self.icon_path)
+            failed_note = f"\n건너뛴 항목: {len(_failed_paths)}개 (권한 등으로 이름 변경 실패)" if _failed_paths else ""
+            rumps.alert(f"변환 완료!\n\n폴더: {folder_name}\n처리된 항목 수: {processed_count}개{failed_note}\n\n모든 파일과 폴더명이 NFD에서 NFC로 변환되었습니다.", icon_path=self.icon_path)
         except Exception as e:
             rumps.alert(f"오류: {str(e)}")
 
