@@ -56,8 +56,7 @@ py2app 번들 안에서 값들이 개발 실행과 다르다. 추측하지 말�
 
 - `sys.executable` = `<앱>.app/Contents/MacOS/python` — **앱 실행파일이 아니다.** 앱을 다시 띄우려면 `__file__`(`Contents/Resources/main.py`)에서 `../..`로 `.app` 경로를 되짚어 `/usr/bin/open <bundle>`을 쓴다 (`launch_arguments()`).
 - `sys.frozen == 'macosx_app'`, `os.getcwd()` = `Contents/Resources`.
-- **기본 인코딩이 ASCII다.** 한글이 든 텍스트를 기본 인코딩으로 쓰면 `UnicodeEncodeError`. 파일은 `'wb'` + `plistlib`(UTF-8 XML)로 쓰거나 `encoding='utf-8'`을 명시할 것.
-  - 알려진 잠재 버그: `normalize_filenames_in_directory`의 `print(f"{path_type} 처리 중 오류...")`가 번들에서 터질 수 있다. rename 실패 시 감시 스레드가 조용히 죽는다. 아직 미수정.
+- **기본 인코딩이 ASCII다.** 한글이 든 텍스트를 기본 인코딩으로 쓰면 `UnicodeEncodeError`. 파일은 `'wb'` + `plistlib`(UTF-8 XML)로 쓰거나 `encoding='utf-8'`을 명시할 것. `print`는 모듈 최상단에서 stdout/stderr를 UTF-8로 `reconfigure` 해 두었으니 그냥 써도 된다 — **그 블록을 지우지 말 것.**
 - 번들 디버깅은 `open`이 아니라 실행파일을 직접 돌려 stderr를 본다: `"dist/자소.app/Contents/MacOS/자소"`.
 
 ## 주의사항
@@ -67,7 +66,14 @@ py2app 번들 안에서 값들이 개발 실행과 다르다. 추측하지 말�
 - `ICON_PATH`는 두 실행 환경을 모두 커버한다: 번들에서는 cwd가 `Contents/Resources`라 `icon.icns`가 그대로 잡히고, 개발 실행에서는 `assets/icon.icns`로 폴백한다. 아이콘 위치를 옮기면 `setup.py`의 `iconfile`·`DATA_FILES`와 함께 고쳐야 한다.
 - 메뉴 항목 제목이 곧 키다 (`self.menu["대상 폴더 선택"]`). 한글 문자열을 바꾸면 조회 코드도 같이 고쳐야 한다.
 - 버전이 세 곳에 흩어져 있다: `pyproject.toml`(0.1.0), `setup.py`의 `version`(0.0.1)과 `CFBundleShortVersionString`(0.1.0), `build_dmg.sh`의 `VERSION`. 릴리스 시 전부 맞출 것.
-- 파일명 조작 코드다. rename 실패는 `normalize_filenames_in_directory` 안에서 개별 `try/except`로 삼켜 로그만 남긴다 — 한 파일 실패가 전체 순회를 멈추지 않게 하는 의도이니 유지.
+- 파일명 조작 코드다. rename 실패는 `normalize_quietly()`가 삼켜 로그만 남긴다 — 한 경로의 실패가 전체 순회를 멈추지 않게 하는 의도이니 유지.
+- `Handler.on_any_event`의 `try/except`도 유지. watchdog 감시 스레드로 예외가 새어나가면 스레드가 죽고 감시가 **조용히** 멈춘다(알림도 없다). 이 핸들러가 그 경계다.
+
+### 알려진 문제: rename이 계속 실패하는 경로가 있으면 감시가 폭주한다
+
+읽기 전용 하위 폴더처럼 rename이 **영구적으로** 실패하는 NFD 파일이 감시 트리에 있으면, 실패한 rename이 다시 이벤트를 유발해 초당 150여 회 순회가 반복된다(실측 CPU 12%, 로그 폭증). 정상 폴더에서는 유휴 CPU 0%로 재현되지 않는다.
+
+원인은 "실패한 경로를 무한히 재시도한다"는 것. 실패한 경로를 기억해 건너뛰는 식의 가드가 필요하다. 미수정.
 
 ## 코드 스타일
 
