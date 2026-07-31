@@ -59,13 +59,31 @@ def set_autostart(enabled: bool, plist_path: str = AUTOSTART_PLIST):
 
 def normalize_path(path: str):
     # 주어진 파일 경로의 이름을 NFC 유니코드 형식으로 정규화하고 파일명을 변경합니다.
+    # 길이 비교가 아니라 문자열 비교를 쓴다 — 길이가 같은데 코드포인트가 다른 정규화도 있다.
     directory, name = os.path.split(path)
     normalized_name = unicodedata.normalize('NFC', name)
-    if len(name) == len(normalized_name):
+    if name == normalized_name:
         return
 
     normalized_path = os.path.join(directory, normalized_name)
     os.rename(path, normalized_path)
+
+
+def resolve_stored_path(path: str):
+    # FSEvents(watchdog)가 넘겨주는 경로의 이름은 항상 NFD다. 디스크에 이미 NFC로 저장돼
+    # 있어도 NFD 문자열이 오므로, 그 문자열만 믿으면 같은 파일을 끝없이 rename 하게 된다.
+    # (실측: 초당 230여 건의 no-op rename → 이벤트 → rename 무한 루프)
+    # 그래서 부모 폴더를 훑어 실제로 저장된 이름을 찾아 돌려준다.
+    directory, name = os.path.split(path)
+    wanted = unicodedata.normalize('NFC', name)
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if unicodedata.normalize('NFC', entry.name) == wanted:
+                    return os.path.join(directory, entry.name)
+    except OSError:
+        return None
+    return None  # 이미 지워졌거나 옮겨진 경로
 
 
 # rename이 영구적으로 실패하는 경로(읽기 전용 폴더 안의 NFD 파일 등)를 계속 재시도하면
@@ -158,10 +176,17 @@ class Handler(FileSystemEventHandler):
         # watchdog 감시 스레드로 예외가 빠져나가면 스레드가 죽어 감시가 조용히 멈춘다.
         # 이벤트 처리 중 무슨 일이 나든 여기서 막는다.
         try:
-            if event.event_type in ('created', 'modified'):
-                normalize_filenames_in_directory(event.src_path)
-            elif event.event_type == 'moved':
-                normalize_filenames_in_directory(event.dest_path)
+            if event.event_type == 'moved':
+                path = event.dest_path
+            elif event.event_type in ('created', 'modified'):
+                path = event.src_path
+            else:
+                return
+
+            # 이벤트가 준 NFD 경로를 실제 저장된 이름으로 되돌린 뒤에 처리한다.
+            path = resolve_stored_path(path)
+            if path is not None:
+                normalize_filenames_in_directory(path)
         except Exception as e:
             print(f"이벤트 처리 중 오류 발생: {event.event_type} {event.src_path}, 오류: {e}")
 
