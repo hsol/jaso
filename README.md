@@ -68,6 +68,8 @@ poetry run python src/main.py
 
 이제 수정되거나, 이동하거나, 추가되는 폴더 및 파일명의 한글이 자소분리되지 않습니다!
 
+선택한 폴더는 기억되므로, 앱을 다시 켜면 바로 이어서 감시합니다. ("다시선택"을 눌러 취소하면 기억도 지워집니다.)
+
 <img width="271" height="220" alt="image" src="https://github.com/user-attachments/assets/77d569a5-53eb-4ba8-802c-6c9a3148b99f" />
 
 ### 3. 로그인 시 자동실행

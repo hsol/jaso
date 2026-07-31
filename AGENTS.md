@@ -44,7 +44,11 @@ PYTHONIOENCODING=utf-8 "dist/자소.app/Contents/MacOS/자소" --selfcheck   # �
 2. `normalize_filenames_in_directory(dir)` — `os.walk(topdown=False)`로 전 경로 수집 후 **역순(깊은 것부터) 처리**. 상위 폴더 rename이 하위 경로를 무효화하는 문제를 피하기 위한 것이니 순서를 바꾸지 말 것.
 3. `Handler.on_any_event` — created/modified/moved 이벤트마다 해당 경로를 정규화.
 4. `Watcher.run` — `Observer` 시작 + `rumps.Timer`로 1초마다 `observer.join(1)`. rumps 이벤트 루프와 watchdog 스레드를 공존시키기 위한 장치.
-5. 로그인 시 자동실행 — `~/Library/LaunchAgents/tech.proofer.jaso.plist`의 **존재 여부**가 곧 on/off. `launchctl load/unload`는 쓰지 않는다(로그인 시 실행만 필요). 메뉴 체크 상태는 `@rumps.events.before_start` 훅에서 맞춘다 — rumps는 `run()` 시점에 메뉴를 만들기 때문에 `__init__`에서는 `self.menu[...]`가 아직 없다.
+5. 로그인 시 자동실행 — `~/Library/LaunchAgents/tech.proofer.jaso.plist`의 **존재 여부**가 곧 on/off. `launchctl load/unload`는 쓰지 않는다(로그인 시 실행만 필요).
+6. 감시 폴더 기억 — `Application Support/자소/watched_directory`에 경로 한 줄. `rumps.App.open()`이 위치를 잡아주므로 별도 경로 계산 없음. **바이너리 + utf-8 명시** 필수(아래 ASCII 함정).
+7. `@rumps.events.before_start` 훅(`_restore_state`)에서 체크 상태와 감시 폴더를 모두 복원한다 — rumps는 `run()` 시점에 메뉴를 만들기 때문에 `__init__`에서는 `self.menu[...]`가 아직 없다. 복원은 알림창 없이 조용히 한다(로그인 자동실행 때 팝업이 뜨면 안 되므로).
+
+폴더 선택과 시작 시 복원은 `_start_watching()` 하나를 공유한다. 감시 시작 로직을 고칠 때는 여기만 고치면 된다.
 
 ## 번들 런타임의 함정 (실측)
 

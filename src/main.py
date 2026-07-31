@@ -16,6 +16,9 @@ ICON_PATH = ('icon.icns' if os.path.exists('icon.icns')
 AUTOSTART_LABEL = 'tech.proofer.jaso'
 AUTOSTART_PLIST = os.path.expanduser(f'~/Library/LaunchAgents/{AUTOSTART_LABEL}.plist')
 
+# Application Support/자소/ 안에 저장되는 감시 폴더 경로 파일 (rumps.App.open 이 위치를 잡아준다)
+WATCHED_DIRECTORY_FILE = 'watched_directory'
+
 
 def launch_arguments():
     # 번들에서 sys.executable 은 Contents/MacOS/python (앱 실행파일이 아님) 이므로 쓸 수 없다.
@@ -147,14 +150,46 @@ class JasoRumpsApp(rumps.App):
         self.watched_directory = None
         self.convert_menu_item = None
 
+    # 감시 폴더 기억: rumps가 만들어주는 Application Support 폴더에 경로 한 줄만 저장한다.
+    # 번들의 기본 인코딩이 ASCII라 한글 경로가 깨지므로 반드시 바이너리 + utf-8 로 다룬다.
+    def _load_watched_directory(self):
+        try:
+            with self.open(WATCHED_DIRECTORY_FILE, 'rb') as f:
+                directory = f.read().decode('utf-8')
+        except (OSError, UnicodeDecodeError):
+            return None
+        return directory if os.path.isdir(directory) else None
+
+    def _save_watched_directory(self, directory):
+        try:
+            with self.open(WATCHED_DIRECTORY_FILE, 'wb') as f:
+                f.write((directory or '').encode('utf-8'))
+        except OSError as e:
+            print('감시 폴더 저장 실패:', e)
+
+    def _start_watching(self, directory_path):
+        # 폴더 선택과 시작 시 자동 복원이 공유하는 경로
+        self.watched_directory = directory_path
+        folder_name = os.path.basename(directory_path)
+        self.menu["대상 폴더 선택"].title = f"다시선택 ({folder_name}에서 변환 중)"
+
+        # 한번에 변환 메뉴 추가
+        if self.convert_menu_item is None:
+            self.convert_menu_item = rumps.MenuItem("한번에 변환", callback=self._convert_once)
+            self.menu.insert_before("로그인 시 자동실행", self.convert_menu_item)
+
+        self.watcher = Watcher(directory_path)
+        self.watcher.run()
+
     @rumps.clicked("대상 폴더 선택")
     def _select_directory(self, _):
         try:
             if self.watcher:
                 self.watcher.stop()
                 self.watched_directory = None
+                self._save_watched_directory('')
                 self.menu["대상 폴더 선택"].title = "대상 폴더 선택"
-                
+
                 # 한번에 변환 메뉴 제거
                 if self.convert_menu_item:
                     self.menu.pop(self.convert_menu_item.title)
@@ -193,19 +228,9 @@ class JasoRumpsApp(rumps.App):
                 if not os.path.isdir(directory_path):
                     rumps.alert("유효하지 않은 폴더입니다.", icon_path=self.icon_path)
                 else:
-                    # 버튼 텍스트 업데이트
-                    self.watched_directory = directory_path
-                    folder_name = os.path.basename(directory_path)
-                    self.menu["대상 폴더 선택"].title = f"다시선택 ({folder_name}에서 변환 중)"
-                    
-                    # 한번에 변환 메뉴 추가
-                    if self.convert_menu_item is None:
-                        self.convert_menu_item = rumps.MenuItem("한번에 변환", callback=self._convert_once)
-                        self.menu.insert_before("로그인 시 자동실행", self.convert_menu_item)
-                    
+                    self._start_watching(directory_path)
+                    self._save_watched_directory(directory_path)
                     rumps.alert("폴더가 설정되었습니다. 이제부터 해당 폴더에서 자동으로 한글의 자소분리가 방지됩니다.", icon_path=self.icon_path)
-                    self.watcher = Watcher(directory_path)
-                    self.watcher.run()
             else:
                 rumps.alert("폴더를 선택하지 않았습니다.", icon_path=self.icon_path)
         except Exception as e:
@@ -229,9 +254,14 @@ class JasoRumpsApp(rumps.App):
             rumps.alert(f"오류: {str(e)}")
 
     @rumps.events.before_start
-    def _sync_autostart_state(self):
-        # 메뉴는 run() 시점에 만들어지므로 __init__ 이 아니라 여기서 체크 상태를 맞춘다.
+    def _restore_state(self):
+        # 메뉴는 run() 시점에 만들어지므로 __init__ 이 아니라 여기서 상태를 맞춘다.
         self.menu["로그인 시 자동실행"].state = autostart_enabled()
+
+        directory = self._load_watched_directory()
+        if directory:
+            # 시작 시 복원은 조용히 — 로그인 자동실행 때 알림창이 뜨면 곤란하다.
+            self._start_watching(directory)
 
     @rumps.clicked("로그인 시 자동실행")
     def _toggle_autostart(self, sender):
