@@ -15,6 +15,15 @@ VERSION=$(poetry run python -c 'import tomllib,pathlib;print(tomllib.loads(pathl
 DMG_NAME="jaso-${VERSION}.dmg"
 VOLUME_NAME="${APP_NAME}"
 
+# 서명 identity는 접두 매칭으로 잡는다 — 해시를 박으면 CI의 임시 키체인에서 안 맞는다.
+# 인증서가 없는 기계(로컬 기여자)에서는 경고만 남기고 미서명으로 계속 빌드한다.
+# 릴리스에서 "secret 없으면 실패"시키는 건 워크플로 쪽 몫이다.
+SIGN_ID="Developer ID Application"
+if [ "$(security find-identity -v -p codesigning | grep -c "$SIGN_ID")" -eq 0 ]; then
+    echo "⚠️  '${SIGN_ID}' 인증서가 없습니다 — 미서명으로 계속합니다(배포용으로는 쓸 수 없습니다)."
+    SIGN_ID=""
+fi
+
 # 기존 빌드 파일 정리
 echo "🧹 기존 빌드 파일을 정리합니다..."
 rm -rf build dist *.dmg
@@ -30,6 +39,47 @@ if [ ! -d "dist/${APP_NAME}.app" ]; then
 fi
 
 echo "✅ 앱 빌드가 완료되었습니다."
+
+# 실행파일 이름을 ASCII로 바꾼다. 취향이 아니라 codesign 때문이다.
+# CFBundleExecutable이 한글이면 codesign이 그 파일을 "번들의 메인 실행파일"로 알아보지 못하고
+# Contents/MacOS/ 안의 nested code로 취급해 CodeResources에 cdhash를 봉인해버린다. 그런데 메인
+# 실행파일은 봉인 뒤에 서명이 박히므로 cdhash가 곧바로 어긋나고, 검증이 이렇게 실패한다:
+#   codesign -vvv --strict dist/자소.app  → "a sealed resource is missing or invalid"
+# (ASCII 이름으로 바꾸면 같은 번들이 "valid on disk"로 통과한다. 실측으로 확인했다.)
+# 번들 이름(자소.app)·CFBundleName·CFBundleDisplayName은 그대로라 Finder에는 여전히 '자소'로 보인다.
+echo "🔤 실행파일 이름을 ASCII로 바꿉니다 (codesign 요구사항)..."
+mv "dist/${APP_NAME}.app/Contents/MacOS/${APP_NAME}" "dist/${APP_NAME}.app/Contents/MacOS/jaso"
+plutil -replace CFBundleExecutable -string jaso "dist/${APP_NAME}.app/Contents/Info.plist"
+
+# 앱 서명 — hdiutil 앞에서. DMG 안에 들어가는 앱이 이미 서명돼 있어야 한다.
+# 안쪽(.so/.dylib/보조 실행파일)부터 서명하고 마지막에 .app 을 서명한다.
+# codesign --deep 은 애플이 권장하지 않고 공증에서 자주 반려되므로 쓰지 않는다.
+if [ -n "$SIGN_ID" ]; then
+    echo "🔏 번들 내부 바이너리를 서명합니다..."
+    find "dist/${APP_NAME}.app/Contents" \
+        \( -name '*.so' -o -name '*.dylib' -o -path '*/MacOS/python' \) \
+        -exec codesign --force --options runtime --timestamp -s "$SIGN_ID" {} +
+
+    # assets/jaso.entitlements 는 disable-library-validation 하나만 담는다. 실측 결과다
+    # (ad-hoc + --options runtime 으로 서명해 앱을 띄우고 NFD 파일을 떨궈 정규화까지 확인):
+    #   없음 / allow-unsigned-executable-memory 만 → libpython3.11.dylib dlopen 실패
+    #     ("mapping process and mapped file (non-platform) have different Team IDs"), 정규화 안 됨
+    #   disable-library-validation 만              → 정상 기동 + 정규화 성공. 이걸 남긴다
+    # py2app 번들은 Contents/Frameworks의 libpython·libssl 을 실행 중에 dlopen 하므로 이게 필요하다.
+    # 주의: entitlements plist에 XML 주석을 넣으면 codesign이 파싱에 실패한다("AMFIUnserializeXML:
+    # syntax error"). 그래서 설명이 파일이 아니라 여기 있다.
+    echo "🔏 앱을 서명합니다..."
+    codesign --force --options runtime --timestamp \
+        --entitlements assets/jaso.entitlements -s "$SIGN_ID" "dist/${APP_NAME}.app"
+
+    codesign -vvv --strict "dist/${APP_NAME}.app"
+else
+    # 미서명 경로에서도 봉인은 맞춰 둔다. 위에서 Info.plist를 고쳤기 때문에 py2app이 붙여 둔
+    # ad-hoc 서명이 깨진 상태다(codesign --verify → "invalid Info.plist"). 지금은 그래도 실행되지만
+    # 깨진 서명을 남길 이유가 없다. ad-hoc으로 다시 봉인한다.
+    codesign --force -s - "dist/${APP_NAME}.app"
+    codesign --verify "dist/${APP_NAME}.app"
+fi
 
 # 임시 디렉토리 생성
 echo "📦 임시 디렉토리를 생성합니다..."
@@ -47,6 +97,13 @@ ln -s /Applications "${TEMP_DIR}/Applications"
 # DMG 파일 생성
 echo "📦 DMG 파일을 생성합니다..."
 hdiutil create -volname "${VOLUME_NAME}" -srcfolder "${TEMP_DIR}" -ov -format UDZO "${DMG_NAME}"
+
+# DMG 서명 — hdiutil 뒤에서. DMG는 실행 코드가 아니라 --options runtime / entitlements 를 붙이지 않는다.
+if [ -n "$SIGN_ID" ]; then
+    echo "🔏 DMG를 서명합니다..."
+    codesign --force --timestamp -s "$SIGN_ID" "${DMG_NAME}"
+    codesign -vvv "${DMG_NAME}"
+fi
 
 # 임시 디렉토리 정리
 echo "🧹 임시 디렉토리를 정리합니다..."
