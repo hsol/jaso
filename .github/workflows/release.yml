@@ -45,9 +45,12 @@ jobs:
           CERT_P12_BASE64: ${{ secrets.CERT_P12_BASE64 }}
           CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
           TEAM_ID: ${{ secrets.TEAM_ID }}
+          AC_KEY_ID: ${{ secrets.AC_KEY_ID }}
+          AC_ISSUER_ID: ${{ secrets.AC_ISSUER_ID }}
+          AC_KEY_P8_BASE64: ${{ secrets.AC_KEY_P8_BASE64 }}
         run: |
           MISSING=""
-          for NAME in CERT_P12_BASE64 CERT_PASSWORD TEAM_ID; do
+          for NAME in CERT_P12_BASE64 CERT_PASSWORD TEAM_ID AC_KEY_ID AC_ISSUER_ID AC_KEY_P8_BASE64; do
             [ -n "${!NAME}" ] || MISSING="$MISSING $NAME"
           done
           if [ -n "$MISSING" ]; then
@@ -85,23 +88,70 @@ jobs:
           # 인증서가 실제로 잡혔는지 눈으로 보는 줄. 여기 이름이 안 나오면 아래 빌드는 미서명이 된다.
           security find-identity -v -p codesigning
 
-      # ponytail: 설치·빌드·릴리스를 한 스텝에 몰았다. if 조건이 하나면 되고 로그도 한 덩어리다.
+      # ponytail: 설치·빌드를 한 스텝에 몰았다. if 조건이 하나면 되고 로그도 한 덩어리다.
       # 천장: poetry 캐시가 없어 매번 새로 받는다(2~3분). 릴리스는 버전 올릴 때만 도니 아직 아깝지 않다 —
       # 릴리스가 잦아지면 actions/cache로 ~/Library/Caches/pypoetry를 잡으면 된다.
-      - name: DMG 빌드 · 릴리스 생성
+      - name: DMG 빌드
         if: steps.check.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.check.outputs.version }}
         run: |
           pip install poetry
           poetry install
           ./scripts/build_dmg.sh
+
+      # 서명만으로는 다운로드한 사용자에게 Gatekeeper 경고가 그대로 뜬다. 공증 + staple까지 해야
+      # 인터넷 없이도 검증이 통과한다. 반드시 릴리스 업로드 **앞**이다 — 뒤집으면 경고가 남은 파일이 올라간다.
+      # 애플 서버 대기 때문에 이 스텝만 2~10분 걸린다. 정상이다.
+      - name: 공증 · staple
+        if: steps.check.outputs.skip == 'false'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          AC_KEY_ID: ${{ secrets.AC_KEY_ID }}
+          AC_ISSUER_ID: ${{ secrets.AC_ISSUER_ID }}
+          AC_KEY_P8_BASE64: ${{ secrets.AC_KEY_P8_BASE64 }}
+        run: |
+          KEY="$RUNNER_TEMP/ac_key.p8"
+          DMG="jaso-$VERSION.dmg"
+          echo "$AC_KEY_P8_BASE64" | base64 -D > "$KEY"
+
+          # submit 자체가 실패해도(인증 오류·네트워크) 여기서 죽지 않고 아래 status 분기로 간다 —
+          # 그래야 사유를 찍고 죽을 수 있다.
+          SUBMIT=$(xcrun notarytool submit "$DMG" --key "$KEY" --key-id "$AC_KEY_ID" --issuer "$AC_ISSUER_ID" --wait --output-format json) || true
+          echo "$SUBMIT"
+
+          # JSON이 아니면(=submit이 애플 서버에 닿지도 못했다) 빈 값이 나오고 아래에서 죽는다.
+          field() { printf '%s' "$SUBMIT" | python3 -c "import json,sys;print(json.load(sys.stdin).get('$1',''))" 2>/dev/null || true; }
+          ID=$(field id)
+          STATUS=$(field status)
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::공증이 통과하지 못했습니다(status=${STATUS:-알 수 없음}). 아래 notarytool 로그가 반려 사유입니다."
+            if [ -n "$ID" ]; then
+              xcrun notarytool log "$ID" --key "$KEY" --key-id "$AC_KEY_ID" --issuer "$AC_ISSUER_ID" || true
+            else
+              echo "제출 ID를 받지 못해 로그를 가져올 수 없습니다. 위 submit 출력이 전부입니다."
+            fi
+            exit 1
+          fi
+
+          # staple: 공증 티켓을 DMG에 박아 사용자가 오프라인에서도 검증되게 한다.
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          # 사용자가 DMG를 여는 그 경로(-t open)로 Gatekeeper를 실제로 태워 본다. 여기서 죽으면 릴리스는 안 올라간다.
+          spctl -a -t open --context context:primary-signature -vv "$DMG"
+
+      - name: 릴리스 생성
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
           gh release create "v$VERSION" "jaso-$VERSION.dmg" --generate-notes
 
-      # 실패해도 러너에 인증서를 남기지 않는다. 키체인을 지우면 검색 경로에서도 함께 빠진다.
+      # 실패해도 러너에 인증서·키를 남기지 않는다. 키체인을 지우면 검색 경로에서도 함께 빠진다.
       - name: 키체인 · 인증서 파일 정리
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/cert.p12"
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/ac_key.p8"
