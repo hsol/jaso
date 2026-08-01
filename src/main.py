@@ -154,6 +154,10 @@ class Watcher:
     observer: Observer | None = None
     timer: rumps.Timer | None = None
 
+    def __init__(self):
+        # 폴더 경로 -> watchdog 핸들. 폴더 하나만 떼어내려면 schedule()이 준 핸들이 필요하다.
+        self.watches: dict[str, object] = {}
+
     def watch(self, directory_to_watch):
         # 이미 도는 Observer에 경로를 하나 더 건다 — 기존 폴더의 감시는 끊기지 않는다.
         if self.observer is None:
@@ -167,7 +171,15 @@ class Watcher:
             self.timer = rumps.Timer(_maintainer, 1)
             self.timer.start()
 
-        self.observer.schedule(Handler(), directory_to_watch, recursive=True)
+        self.watches[directory_to_watch] = self.observer.schedule(Handler(), directory_to_watch, recursive=True)
+
+    def unwatch(self, directory_to_watch):
+        # 이 경로만 뗀다 — 같은 Observer에 걸린 나머지 폴더의 감시는 그대로다.
+        watch = self.watches.pop(directory_to_watch, None)
+        if watch is not None and self.observer is not None:
+            self.observer.unschedule(watch)
+        if not self.watches:
+            self.stop()  # 마지막 폴더가 빠지면 스레드도 접는다. watch()가 다시 살린다
 
     def stop(self):
         # 걸어둔 경로가 몇 개든 Observer가 하나라 한 번의 stop으로 감시 스레드가 전부 정지한다.
@@ -180,6 +192,7 @@ class Watcher:
             self.timer and self.timer.stop()
             self.observer = None
             self.timer = None
+            self.watches.clear()
 
 
 class Handler(FileSystemEventHandler):
@@ -231,18 +244,46 @@ class JasoRumpsApp(rumps.App):
         except OSError as e:
             print('감시 폴더 저장 실패:', e)
 
+    def _update_add_title(self):
+        count = len(self.watched_directories)
+        self.menu["대상 폴더 선택"].title = f"폴더 추가 ({count}곳 감시 중)" if count else "대상 폴더 선택"
+
     def _start_watching(self, directory_path):
         # 폴더 선택과 시작 시 자동 복원이 공유하는 경로. 목록에 하나를 더한다.
         _failed_paths.clear()  # 새 감시 시작이면 지난 실패 기록은 무효
         self.watched_directories.append(directory_path)
-        self.menu["대상 폴더 선택"].title = f"폴더 추가 ({len(self.watched_directories)}곳 감시 중)"
 
-        # 한번에 변환 메뉴 추가
+        # "한번에 변환"을 먼저 세우고 폴더 항목을 그 앞에 끼운다. 기준선이 늘 아래에 있으니
+        # 폴더가 몇 개 늘고 줄어도 자동실행·도움말·종료는 순서 그대로 남는다.
         if self.convert_menu_item is None:
             self.convert_menu_item = rumps.MenuItem("한번에 변환", callback=self._convert_once)
             self.menu.insert_before("로그인 시 자동실행", self.convert_menu_item)
 
+        # 메뉴 키는 전체 경로다 — 이름이 같은 폴더 둘을 걸어도 서로를 덮어쓰지 않는다.
+        # 넣을 때의 title이 그대로 키가 되므로(rumps), 끼운 뒤에 보이는 이름만 폴더명으로 바꾼다.
+        item = rumps.MenuItem(directory_path)
+        item.add(rumps.MenuItem(directory_path))  # 서브메뉴 머리글: 콜백이 없어 비활성 = 전체 경로 표시용
+        item.add(rumps.MenuItem("감시 해제", callback=lambda _, p=directory_path: self._stop_watching(p)))
+        self.menu.insert_before("한번에 변환", item)
+        item.title = os.path.basename(directory_path)
+
+        self._update_add_title()
         self.watcher.watch(directory_path)
+
+    def _stop_watching(self, directory_path):
+        # "감시 해제" 콜백. 메뉴 키가 전체 경로라 이름이 같은 다른 폴더는 건드리지 않는다.
+        if directory_path not in self.watched_directories:
+            return
+        self.watched_directories.remove(directory_path)
+        self.watcher.unwatch(directory_path)
+        del self.menu[directory_path]
+
+        if not self.watched_directories:
+            del self.menu["한번에 변환"]  # 폴더가 없으면 변환할 것도 없다 — 초기 상태로 되돌린다
+            self.convert_menu_item = None
+
+        self._update_add_title()
+        self._save_watched_directories()
 
     @rumps.clicked("대상 폴더 선택")
     def _select_directory(self, _):
@@ -376,7 +417,46 @@ def _selfcheck():
         assert parse_watched_directories(f'{a}\n{a}') == [a], '중복 제거'
         assert parse_watched_directories('') == [], '빈 파일'
         assert parse_watched_directories('\n'.join([a, b])) == [a, b], '왕복'
+
+    _selfcheck_menu()
     print('OK:', launch_arguments())
+
+
+def _selfcheck_menu():
+    # 메뉴 조립 검증: 폴더 항목이 순서대로 들어가고, 하나만 빼도 나머지가 남는다.
+    import tempfile
+    app = JasoRumpsApp()
+    fixed = ['대상 폴더 선택', '로그인 시 자동실행', '도움말', '종료']
+    for title in fixed:  # run()이 데코레이터에서 만들어주는 고정 항목을 손으로 세운다
+        app.menu.add(rumps.MenuItem(title))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        app._application_support = tmp  # 진짜 설정 파일을 건드리지 않는다
+        a, b = os.path.join(tmp, '사진'), os.path.join(tmp, '하위', '사진')  # 이름이 같은 폴더 둘
+        os.makedirs(a)
+        os.makedirs(b)
+
+        app._start_watching(a)
+        app._start_watching(b)
+        app._save_watched_directories()
+        assert list(app.menu) == fixed[:1] + [a, b, '한번에 변환'] + fixed[1:], list(app.menu)
+        assert [app.menu[a].title, app.menu[b].title] == ['사진', '사진'], '보이는 건 폴더 이름'
+        assert list(app.menu[a]) == [a, '감시 해제'], '서브메뉴에 전체 경로'
+        assert app.menu['대상 폴더 선택'].title == '폴더 추가 (2곳 감시 중)'
+
+        unwatch_a = app.menu[a]['감시 해제']
+        unwatch_a.callback(unwatch_a)  # 메뉴를 클릭했을 때 rumps가 하는 것과 같은 호출
+        assert app.watched_directories == [b], '나머지 폴더는 유지'
+        assert list(app.watcher.watches) == [b], '나머지 폴더의 감시도 유지'
+        assert list(app.menu) == fixed[:1] + [b, '한번에 변환'] + fixed[1:], list(app.menu)
+        assert app._load_watched_directories() == [b], '해제가 저장 파일에 즉시 반영'
+
+        app._stop_watching(b)
+        assert list(app.menu) == fixed, '전부 해제하면 초기 상태 (한번에 변환 사라짐)'
+        assert app.watcher.observer is None, '감시 스레드도 정리'
+        assert app.menu['대상 폴더 선택'].title == '대상 폴더 선택'
+        assert app._load_watched_directories() == []
+        app._stop_watching(b)  # 두 번 해제해도 예외 없음
 
 
 if __name__ == "__main__":
