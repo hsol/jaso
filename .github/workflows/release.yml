@@ -1,0 +1,51 @@
+name: 릴리스
+
+# pyproject.toml의 version을 올린 커밋이 main에 들어올 때만 릴리스가 만들어진다.
+# 같은 버전으로 다시 푸시하면 아래 중복 확인에서 걸려 빌드 없이 끝난다.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 버전 읽기 · 릴리스 중복 확인
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(python -c 'import tomllib,pathlib;print(tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))["tool"]["poetry"]["version"])')
+          [ -n "$VERSION" ] || { echo "::error::pyproject.toml에서 version을 읽지 못했습니다."; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "::notice::v$VERSION 릴리스가 이미 있어 빌드를 건너뜁니다. 릴리스하려면 pyproject.toml의 version을 올리세요."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "v$VERSION 릴리스가 없습니다. 빌드합니다."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ponytail: 설치·빌드·릴리스를 한 스텝에 몰았다. if 조건이 하나면 되고 로그도 한 덩어리다.
+      # 천장: poetry 캐시가 없어 매번 새로 받는다(2~3분). 릴리스는 버전 올릴 때만 도니 아직 아깝지 않다 —
+      # 릴리스가 잦아지면 actions/cache로 ~/Library/Caches/pypoetry를 잡으면 된다.
+      - name: DMG 빌드 · 릴리스 생성
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          pip install poetry
+          poetry install
+          ./scripts/build_dmg.sh
+          gh release create "v$VERSION" "jaso-$VERSION.dmg" --generate-notes

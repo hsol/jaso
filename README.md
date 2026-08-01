@@ -47,6 +47,12 @@ poetry run python src/main.py
 
 생성된 DMG 파일을 더블클릭하여 마운트한 후, `자소.app`을 `Applications` 폴더로 드래그 앤 드롭하여 설치할 수 있습니다.
 
+### 릴리스
+
+`main`에 푸시하면 GitHub Actions가 DMG를 빌드해 릴리스를 올립니다.
+릴리스할 때 사람이 하는 일은 `pyproject.toml`의 `version` 한 줄을 올리는 것뿐입니다.
+같은 버전으로 다시 푸시하면 이미 그 릴리스가 있으므로 빌드 없이 건너뜁니다.
+
 ## 앱 사용하기
 
 ### 1. 앱 실행
