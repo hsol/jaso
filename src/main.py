@@ -1,6 +1,8 @@
 import os
 import plistlib
 import sys
+import time
+import traceback
 import unicodedata
 import webbrowser
 # macOS 경고 메시지 숨기기
@@ -17,9 +19,33 @@ from AppKit import NSApplication, NSModalPanelWindowLevel, NSOKButton, NSOpenPan
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+APP_NAME = '자소'
+
 # 번들에서는 cwd가 Contents/Resources, 개발 실행에서는 저장소 assets/
 ICON_PATH = ('icon.icns' if os.path.exists('icon.icns')
              else os.path.join(os.path.dirname(__file__), '..', 'assets', 'icon.icns'))
+
+
+def bundle_path():
+    # 번들 실행일 때만 .app 경로를 준다. __file__ 이 <앱>.app/Contents/Resources/main.py 라는 점을 되짚는다.
+    # 개발 실행에서는 .app 자체가 없으므로 None.
+    if getattr(sys, 'frozen', None) != 'macosx_app':
+        return None
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+
+def start_logging():
+    # 번들에서는 stdout/stderr가 갈 데가 없다 — print도 traceback도 그대로 사라진다.
+    # (0e6628e4: 사용자가 오류를 만났는데 남은 증거가 알림창 스크린샷 한 장뿐이었다.)
+    # 이 앱의 except는 전부 print/traceback을 쓰므로 문 하나만 파일로 돌리면 전부 남는다.
+    # ponytail: 회전 없음 — 1MB 넘으면 통째로 버린다. 쌓여봐야 이벤트 처리 실패 로그다
+    path = os.path.join(rumps.application_support(APP_NAME), f'{APP_NAME}.log')
+    if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
+        os.remove(path)
+    if bundle_path() is not None:  # 개발 실행은 터미널로 보는 게 낫다
+        sys.stdout = sys.stderr = open(path, 'a', encoding='utf-8', buffering=1)
+    print(f"\n--- {APP_NAME} 시작 {time.strftime('%Y-%m-%d %H:%M:%S')} pid={os.getpid()} ---")
+    return path
 
 
 def activate():
@@ -34,7 +60,21 @@ def activate():
 def alert(*args, **kwargs):
     # rumps.alert도 NSAlert 모달이라 같은 함정을 밟는다. 이 앱의 알림은 전부 이 문을 지난다.
     activate()
+    # 번들이 통째로 사라지면 icon.icns도 같이 사라진다. rumps.alert는 아이콘 파일이 없으면
+    # FileNotFoundError를 던지므로, 하필 그 상황을 알리려던 알림이 조용히 죽는다(실측).
+    # 아이콘은 있으면 좋은 것이지 알림이 뜨는 조건이 아니다.
+    if not os.path.exists(kwargs.get('icon_path') or ''):
+        kwargs.pop('icon_path', None)
     return rumps.alert(*args, **kwargs)
+
+
+LOG_PATH = start_logging()
+
+
+def report_error(e, icon_path=None, what='오류'):
+    # 예외는 사용자에게 한 줄, 로그에 전부. 번들에서 사후에 읽을 수 있는 유일한 자국이다.
+    traceback.print_exc()
+    alert(f'{what}: {e}\n\n자세한 기록:\n{LOG_PATH}', icon_path=icon_path)
 
 
 AUTOSTART_LABEL = 'tech.proofer.jaso'
@@ -62,11 +102,22 @@ def parse_watched_directories(text: str) -> list[str]:
 
 def launch_arguments():
     # 번들에서 sys.executable 은 Contents/MacOS/python (앱 실행파일이 아님) 이므로 쓸 수 없다.
-    # __file__ 이 <앱>.app/Contents/Resources/main.py 라는 점을 이용해 .app 경로를 되짚고 open 으로 띄운다.
-    if getattr(sys, 'frozen', None) == 'macosx_app':
-        bundle = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    bundle = bundle_path()
+    if bundle is not None:
         return ['/usr/bin/open', bundle]
     return [sys.executable, os.path.abspath(__file__)]
+
+
+def panel_failure_message(bundle):
+    # openPanel()이 nil일 때 사용자에게 할 말. 프로세스 안에서 되살릴 방법이 없으므로
+    # "무엇을 하면 되는지"만 말한다. bundle이 None이면 개발 실행(또는 판단 근거 없음).
+    if bundle is not None and not os.path.exists(bundle):
+        why = (f'실행 중인 {APP_NAME} 앱 파일이 사라졌습니다.\n'
+               '(앱을 옮기거나 지우거나 새 버전으로 덮어썼을 때 생깁니다.)\n\n'
+               f'{APP_NAME}를 종료하고 앱을 다시 실행해 주세요.')
+    else:
+        why = f'{APP_NAME}를 종료한 뒤 다시 실행해 주세요.'
+    return f'폴더 선택창을 열 수 없습니다.\n\n{why}\n\n자세한 기록:\n{LOG_PATH}'
 
 
 def autostart_enabled(plist_path: str = AUTOSTART_PLIST) -> bool:
@@ -136,6 +187,7 @@ def normalize_quietly(path_type: str, path: str) -> bool:
     except Exception as e:
         _failed_paths.add(path)
         print(f"{path_type} 처리 중 오류 발생(이후 건너뜀): {path}, 오류: {e}")
+        traceback.print_exc()
         return False
 
 
@@ -199,10 +251,11 @@ class Watcher:
     def stop(self):
         # 걸어둔 경로가 몇 개든 Observer가 하나라 한 번의 stop으로 감시 스레드가 전부 정지한다.
         try:
-            self.observer.stop()
-            self.observer.join()
-        except:
-            pass
+            if self.observer is not None:  # 이미 멈춘 뒤 또 불러도 정상 (종료 경로가 무조건 부른다)
+                self.observer.stop()
+                self.observer.join()
+        except Exception:
+            traceback.print_exc()
         finally:
             self.observer = None
             self.watches.clear()
@@ -228,6 +281,7 @@ class Handler(FileSystemEventHandler):
                 normalize_filenames_in_directory(path)
         except Exception as e:
             print(f"이벤트 처리 중 오류 발생: {event.event_type} {event.src_path}, 오류: {e}")
+            traceback.print_exc()
 
 
 class JasoRumpsApp(rumps.App):
@@ -315,6 +369,17 @@ class JasoRumpsApp(rumps.App):
         try:
             # 네이티브 폴더 선택 다이얼로그
             panel = NSOpenPanel.openPanel()
+            if panel is None:
+                # AppKit은 이 패널을 별도 XPC 서비스(openAndSavePanelService)에 그린다. 그 서비스가
+                # 뜰 때 SecCodeCopyGuestWithAttributes로 호출한 앱의 서명을 확인하는데, 실행 중에
+                # 앱 번들이 디스크에서 사라졌으면 확인이 실패해 서비스가 즉시 죽고 nil이 돌아온다
+                # (0e6628e4 실측: ViewBridge FAULT ... error 100002 → "Connection interrupted").
+                # 프로세스 안에서 되돌릴 방법이 없다 — 사용자에게 나갈 길을 알려주고 끝낸다.
+                bundle = bundle_path()
+                print(f'openPanel()이 nil을 반환했다. bundle={bundle} '
+                      f'exists={bundle is not None and os.path.exists(bundle)}')
+                alert(panel_failure_message(bundle), icon_path=self.icon_path)
+                return
             panel.setCanChooseFiles_(False)
             panel.setCanChooseDirectories_(True)
             panel.setAllowsMultipleSelection_(False)
@@ -348,7 +413,7 @@ class JasoRumpsApp(rumps.App):
             else:
                 alert("폴더를 선택하지 않았습니다.", icon_path=self.icon_path)
         except Exception as e:
-            alert(f"오류: {str(e)}")
+            report_error(e, self.icon_path)
 
     def _convert_once(self, _):
         try:
@@ -371,7 +436,7 @@ class JasoRumpsApp(rumps.App):
             failed_note = f"\n건너뛴 항목: {len(_failed_paths)}개 (권한 등으로 이름 변경 실패)" if _failed_paths else ""
             alert("변환 완료!\n\n" + "\n".join(lines) + f"{failed_note}\n\n모든 파일과 폴더명이 NFD에서 NFC로 변환되었습니다.", icon_path=self.icon_path)
         except Exception as e:
-            alert(f"오류: {str(e)}")
+            report_error(e, self.icon_path)
 
     @rumps.events.before_start
     def _restore_state(self):
@@ -389,7 +454,7 @@ class JasoRumpsApp(rumps.App):
             set_autostart(bool(sender.state))
         except Exception as e:
             sender.state = autostart_enabled()
-            alert(f"자동실행 설정 실패: {e}", icon_path=self.icon_path)
+            report_error(e, self.icon_path, '자동실행 설정 실패')
 
     @rumps.clicked("도움말", "개발자 정보")
     def _developer_info(self, _):
@@ -439,8 +504,30 @@ def _selfcheck():
         assert parse_watched_directories('') == [], '빈 파일'
         assert parse_watched_directories('\n'.join([a, b])) == [a, b], '왕복'
 
+    # openPanel()이 nil일 때 사용자에게 나가는 문구: 원인별로 갈리고, 파이썬 예외 문구가 새지 않는다
+    with tempfile.TemporaryDirectory() as tmp:
+        gone = panel_failure_message(os.path.join(tmp, '없는앱.app'))
+        assert '사라졌습니다' in gone and '다시 실행' in gone, gone
+        here = panel_failure_message(tmp)  # 번들이 멀쩡한데 nil이면 원인을 단정하지 않는다
+        assert '사라졌습니다' not in here and '다시 실행' in here, here
+        for message in (gone, here, panel_failure_message(None)):
+            assert 'NoneType' not in message and LOG_PATH in message, message
+
+    # 아이콘 파일이 없어도 알림은 떠야 한다. 번들이 사라진 상황에서 실제로 이것 때문에
+    # "폴더 선택창을 열 수 없습니다" 알림이 통째로 죽었다(FileNotFoundError: icon.icns).
+    passed, real_alert = {}, rumps.alert
+    rumps.alert = lambda *a, **k: passed.update(k)
+    try:
+        alert('아이콘 없음', icon_path='/없는/경로/icon.icns')
+        assert 'icon_path' not in passed, passed
+        alert('아이콘 있음', icon_path=ICON_PATH)
+        assert passed.get('icon_path') == ICON_PATH, passed
+    finally:
+        rumps.alert = real_alert
+
     _selfcheck_menu()
     print('OK:', launch_arguments())
+    print('로그:', LOG_PATH)
 
 
 def _selfcheck_menu():
