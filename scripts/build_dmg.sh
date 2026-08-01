@@ -24,7 +24,8 @@ if [ "$(security find-identity -v -p codesigning | grep -c "$SIGN_ID")" -eq 0 ];
     SIGN_ID=""
 fi
 
-# 기존 빌드 파일 정리
+# 기존 빌드 파일 정리 — 지우기 전에 그 번들에서 도는 프로세스부터 끝낸다(스크립트 안에 이유가 있다)
+scripts/stop_dist_app.sh
 echo "🧹 기존 빌드 파일을 정리합니다..."
 rm -rf build dist *.dmg
 
