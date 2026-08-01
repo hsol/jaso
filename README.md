@@ -5,7 +5,11 @@
 
 ### [⬇︎ 최신 버전 내려받기 (.dmg)](https://github.com/hsol/jaso/releases/latest)
 
-macOS 전용. Apple Developer ID로 서명·공증했으므로 "확인되지 않은 개발자" 경고 없이 바로 실행됩니다.
+<!-- 서명·공증된 DMG가 릴리스에 올라가면 아래 문단을 지우고 원래 문장으로 되돌리세요:
+     "macOS 전용. Apple Developer ID로 서명·공증했으므로 "확인되지 않은 개발자" 경고 없이 바로 실행됩니다." -->
+macOS 전용. 지금 릴리스에 올라가 있는 `jaso-0.1.0.dmg`는 서명·공증 기능이 생기기 전에 만들어진
+파일이라 macOS가 실행을 막습니다(실측: `spctl -a -t open` → `rejected`). 서명·공증된 새 버전을
+올리는 중이고, 그때까지 쓰시려면 [직접 빌드](docs/DEVELOPMENT.md)해 주세요.
 
 ## 무슨 문제인가요
 

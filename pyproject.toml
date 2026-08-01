@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "jaso"
-version = "0.1.0"
+version = "0.1.1"
 description = ""
 authors = ["Hansol-Lim <molmoty@gmail.com>"]
 readme = "README.md"
