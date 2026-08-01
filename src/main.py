@@ -13,12 +13,29 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding='utf-8', errors='replace')
 
 import rumps
+from AppKit import NSApplication, NSModalPanelWindowLevel, NSOKButton, NSOpenPanel
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 # 번들에서는 cwd가 Contents/Resources, 개발 실행에서는 저장소 assets/
 ICON_PATH = ('icon.icns' if os.path.exists('icon.icns')
              else os.path.join(os.path.dirname(__file__), '..', 'assets', 'icon.icns'))
+
+
+def activate():
+    # 이 앱은 Dock 없는 accessory(LSUIElement)라 메뉴 항목을 눌러도 활성 앱이 되지 않는다.
+    # 그대로 모달을 띄우면 패널이 키 포커스를 못 받고(번들) 아예 화면에 올라오지도 않는데(개발 실행),
+    # runModal()은 계속 블록된다. 모달 세션이 사는 동안 AppKit이 메뉴 항목을 전부 비활성화하므로
+    # 사용자는 종료조차 못 누른다 — 강제 종료 말고는 길이 없다(81e3dfb8).
+    # 그래서 모달을 띄우기 전에 반드시 앱을 앞으로 올린다.
+    NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+
+
+def alert(*args, **kwargs):
+    # rumps.alert도 NSAlert 모달이라 같은 함정을 밟는다. 이 앱의 알림은 전부 이 문을 지난다.
+    activate()
+    return rumps.alert(*args, **kwargs)
+
 
 AUTOSTART_LABEL = 'tech.proofer.jaso'
 AUTOSTART_PLIST = os.path.expanduser(f'~/Library/LaunchAgents/{AUTOSTART_LABEL}.plist')
@@ -150,9 +167,8 @@ def normalize_filenames_in_directory(directory):
 
 class Watcher:
     # 파일 시스템의 변경을 감시하는 watchdog 클래스입니다.
-    # Observer 하나에 여러 폴더를 걸 수 있으므로 폴더가 늘어도 스레드와 타이머는 하나뿐이다.
+    # Observer 하나에 여러 폴더를 걸 수 있으므로 폴더가 늘어도 감시 스레드는 하나뿐이다.
     observer: Observer | None = None
-    timer: rumps.Timer | None = None
 
     def __init__(self):
         # 폴더 경로 -> watchdog 핸들. 폴더 하나만 떼어내려면 schedule()이 준 핸들이 필요하다.
@@ -160,16 +176,11 @@ class Watcher:
 
     def watch(self, directory_to_watch):
         # 이미 도는 Observer에 경로를 하나 더 건다 — 기존 폴더의 감시는 끊기지 않는다.
+        # Observer는 데몬 스레드라 스스로 돈다 — 메인 스레드가 join으로 붙들 이유가 없다.
+        # (붙들면 rumps.Timer가 메인 런루프에서 매초 1초씩 앱을 멈춰 세운다)
         if self.observer is None:
             self.observer = Observer()
             self.observer.start()
-
-            def _maintainer(timer: rumps.Timer):
-                if self.observer.is_alive():
-                    self.observer.join(1)
-
-            self.timer = rumps.Timer(_maintainer, 1)
-            self.timer.start()
 
         self.watches[directory_to_watch] = self.observer.schedule(Handler(), directory_to_watch, recursive=True)
 
@@ -189,9 +200,7 @@ class Watcher:
         except:
             pass
         finally:
-            self.timer and self.timer.stop()
             self.observer = None
-            self.timer = None
             self.watches.clear()
 
 
@@ -288,11 +297,7 @@ class JasoRumpsApp(rumps.App):
     @rumps.clicked("대상 폴더 선택")
     def _select_directory(self, _):
         try:
-            # AppKit 초기화 및 권한 확인
-            if not NSApplication.sharedApplication():
-                NSApplication.sharedApplication()
-            
-            # rumps를 통해 AppKit에 접근하여 네이티브 폴더 선택 다이얼로그 사용
+            # 네이티브 폴더 선택 다이얼로그
             panel = NSOpenPanel.openPanel()
             panel.setCanChooseFiles_(False)
             panel.setCanChooseDirectories_(True)
@@ -302,8 +307,8 @@ class JasoRumpsApp(rumps.App):
             
             # 다이얼로그를 최상위로 설정
             panel.setLevel_(NSModalPanelWindowLevel)
-            
-            # 메인 스레드에서 실행되도록 보장
+
+            activate()
             result = panel.runModal()
             
             if result == NSOKButton:
@@ -317,22 +322,22 @@ class JasoRumpsApp(rumps.App):
             
             if directory_path:
                 if not os.path.isdir(directory_path):
-                    rumps.alert("유효하지 않은 폴더입니다.", icon_path=self.icon_path)
+                    alert("유효하지 않은 폴더입니다.", icon_path=self.icon_path)
                 elif os.path.normpath(directory_path) in map(os.path.normpath, self.watched_directories):
-                    rumps.alert("이미 감시 중인 폴더입니다.", icon_path=self.icon_path)
+                    alert("이미 감시 중인 폴더입니다.", icon_path=self.icon_path)
                 else:
                     self._start_watching(directory_path)
                     self._save_watched_directories()
-                    rumps.alert(f"폴더가 추가되었습니다. 이제 {len(self.watched_directories)}곳에서 자동으로 한글의 자소분리가 방지됩니다.", icon_path=self.icon_path)
+                    alert(f"폴더가 추가되었습니다. 이제 {len(self.watched_directories)}곳에서 자동으로 한글의 자소분리가 방지됩니다.", icon_path=self.icon_path)
             else:
-                rumps.alert("폴더를 선택하지 않았습니다.", icon_path=self.icon_path)
+                alert("폴더를 선택하지 않았습니다.", icon_path=self.icon_path)
         except Exception as e:
-            rumps.alert(f"오류: {str(e)}")
+            alert(f"오류: {str(e)}")
 
     def _convert_once(self, _):
         try:
             if not self.watched_directories:
-                rumps.alert("먼저 대상 폴더를 선택해주세요.", icon_path=self.icon_path)
+                alert("먼저 대상 폴더를 선택해주세요.", icon_path=self.icon_path)
                 return
 
             # 수동 실행은 재시도 기회다 — 권한을 고쳤을 수 있으니 실패 기록을 비우고 다시 훑는다
@@ -348,9 +353,9 @@ class JasoRumpsApp(rumps.App):
                 lines.append(f"{folder_name}: {normalize_filenames_in_directory(directory)}개")
 
             failed_note = f"\n건너뛴 항목: {len(_failed_paths)}개 (권한 등으로 이름 변경 실패)" if _failed_paths else ""
-            rumps.alert("변환 완료!\n\n" + "\n".join(lines) + f"{failed_note}\n\n모든 파일과 폴더명이 NFD에서 NFC로 변환되었습니다.", icon_path=self.icon_path)
+            alert("변환 완료!\n\n" + "\n".join(lines) + f"{failed_note}\n\n모든 파일과 폴더명이 NFD에서 NFC로 변환되었습니다.", icon_path=self.icon_path)
         except Exception as e:
-            rumps.alert(f"오류: {str(e)}")
+            alert(f"오류: {str(e)}")
 
     @rumps.events.before_start
     def _restore_state(self):
@@ -368,11 +373,11 @@ class JasoRumpsApp(rumps.App):
             set_autostart(bool(sender.state))
         except Exception as e:
             sender.state = autostart_enabled()
-            rumps.alert(f"자동실행 설정 실패: {e}", icon_path=self.icon_path)
+            alert(f"자동실행 설정 실패: {e}", icon_path=self.icon_path)
 
     @rumps.clicked("도움말", "개발자 정보")
     def _developer_info(self, _):
-        if not rumps.alert("개발자 정보", "임한솔\nmolmoty@gmail.com\nhttps://hsol.info",
+        if not alert("개발자 정보", "임한솔\nmolmoty@gmail.com\nhttps://hsol.info",
                            ok="확인", cancel="홈페이지 열기"):
             webbrowser.open("https://hsol.info")
 
@@ -438,6 +443,9 @@ def _selfcheck_menu():
 
         app._start_watching(a)
         app._start_watching(b)
+        # rumps.Timer는 NSDefaultRunLoopMode에 걸린다 — 콜백이 붙드는 동안 앱 전체가 멎는다.
+        # 감시는 데몬 스레드가 알아서 돈다. 메인 런루프에 타이머를 거는 순간이 회귀다(81e3dfb8).
+        assert rumps.timers() == [], rumps.timers()
         app._save_watched_directories()
         assert list(app.menu) == fixed[:1] + [a, b, '한번에 변환'] + fixed[1:], list(app.menu)
         assert [app.menu[a].title, app.menu[b].title] == ['사진', '사진'], '보이는 건 폴더 이름'
@@ -464,6 +472,5 @@ if __name__ == "__main__":
         _selfcheck()
         raise SystemExit
 
-    from AppKit import NSOpenPanel, NSOKButton, NSApplication, NSModalPanelWindowLevel
     app = JasoRumpsApp()
     app.run()
