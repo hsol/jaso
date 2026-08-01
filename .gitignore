@@ -135,3 +135,8 @@ pyvenv.cfg
 .Trashes
 ehthumbs.db
 Thumbs.db
+.gstack/
+.dira/
+
+# 빌드 산출물
+*.dmg
