@@ -16,6 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 릴리스 DMG의 실행 하한을 정하는 것이 이 스텝이다. py2app은 이 Python이 링크한 dylib을
+      # 번들에 복사하는데, setup-python의 macOS 3.11은 python.org의 macos11 universal2 pkg라
+      # 번들되는 OpenSSL까지 전부 minos 11.0이다(실측: 티켓 6ad582ef). Homebrew Python으로
+      # 로컬에서 만들면 그 맥의 OS 버전이 하한이 되므로, 배포용 DMG는 여기서만 만든다.
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'

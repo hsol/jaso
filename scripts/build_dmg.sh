@@ -40,6 +40,36 @@ fi
 
 echo "✅ 앱 빌드가 완료되었습니다."
 
+# 실행 하한 검증 — 스텁 하나만 보면 안 된다.
+# py2app 스텁은 늘 11.0이지만 앱이 실제로 로드하는 건 Contents/Frameworks의 dylib이고,
+# 그건 빌드에 쓴 Python이 링크한 것을 그대로 복사한 것이다. Homebrew Python으로 빌드하면
+# libssl/libcrypto가 그 맥의 OS 버전으로 박힌다(실측: macOS 26 머신에서 minos 26.0).
+# 그러면 Info.plist가 약속한 하한이 조용히 거짓이 되므로, 여기서 세운다.
+echo "🔍 번들의 실제 실행 하한을 확인합니다..."
+APP_DIR="dist/${APP_NAME}.app"
+DECLARED=$(plutil -extract LSMinimumSystemVersion raw "${APP_DIR}/Contents/Info.plist")
+MINOS_LIST=$(find "${APP_DIR}/Contents" -type f \
+    \( -name '*.so' -o -name '*.dylib' -o -path '*/MacOS/*' \) | while read -r f; do
+        V=$(otool -l "$f" 2>/dev/null | awk '/minos/ {print $2; exit}')
+        [ -n "$V" ] && printf '%s %s\n' "$V" "$f"
+    done | sort -V)
+ACTUAL=$(printf '%s\n' "$MINOS_LIST" | tail -1 | awk '{print $1}')
+if [ -z "$ACTUAL" ]; then
+    echo "❌ 번들에서 Mach-O 바이너리를 하나도 못 읽었습니다 — 검사가 통째로 무력해진 상태라 세웁니다."
+    exit 1
+fi
+
+if [ "$(printf '%s\n%s\n' "$DECLARED" "$ACTUAL" | sort -V | tail -1)" != "$DECLARED" ]; then
+    echo "❌ 번들의 실제 하한(${ACTUAL})이 Info.plist의 LSMinimumSystemVersion(${DECLARED})보다 높습니다."
+    echo "   이 DMG는 macOS ${DECLARED} 사용자에게서 dyld 로드 실패로 죽습니다. 원인 파일:"
+    printf '%s\n' "$MINOS_LIST" | awk -v v="$ACTUAL" '$1 == v {print "     " $0}'
+    echo "   릴리스 DMG는 CI(.github/workflows/release.yml)에서만 만드세요 — 그쪽 Python은"
+    echo "   python.org의 macos11 빌드라 번들 전체가 11.0으로 고정입니다."
+    echo "   하한을 정말 올리려면 setup.py의 LSMinimumSystemVersion과 README의 숫자를 같이 고치세요."
+    exit 1
+fi
+echo "✅ 실제 하한 ${ACTUAL} ≤ 선언한 하한 ${DECLARED} (검사한 바이너리 $(printf '%s\n' "$MINOS_LIST" | wc -l | tr -d ' ')개)"
+
 # 실행파일 이름을 ASCII로 바꾼다. 취향이 아니라 codesign 때문이다.
 # CFBundleExecutable이 한글이면 codesign이 그 파일을 "번들의 메인 실행파일"로 알아보지 못하고
 # Contents/MacOS/ 안의 nested code로 취급해 CodeResources에 cdhash를 봉인해버린다. 그런데 메인

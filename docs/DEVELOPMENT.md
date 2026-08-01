@@ -45,9 +45,18 @@ poetry run python src/main.py
 
 생성된 DMG 파일을 더블클릭하여 마운트한 후, `자소.app`을 `Applications` 폴더로 드래그 앤 드롭하여 설치할 수 있습니다.
 
+**이 DMG는 배포용이 아닙니다.** py2app은 빌드에 쓴 Python이 링크한 dylib을 그대로 번들에 넣기
+때문에, Homebrew Python으로 만들면 `libssl`·`libcrypto`의 실행 하한이 **빌드한 맥의 OS 버전**이
+됩니다(실측: macOS 26 머신에서 `minos 26.0`). 그 DMG를 받은 사람은 안내 대신 dyld 로드 실패로
+앱이 죽는 것만 봅니다. `build_dmg.sh`는 번들의 실제 `minos`가 `Info.plist`의
+`LSMinimumSystemVersion`(현재 11.0)보다 높으면 그 자리에서 빌드를 세웁니다 — 로컬에서
+이 오류가 나는 건 정상이고, 배포용 DMG는 아래 CI에서만 만듭니다.
+
 ## 릴리스
 
 `main`에 푸시하면 GitHub Actions가 DMG를 빌드해 릴리스를 올립니다.
+릴리스 DMG를 사람 맥에서 만들어 올리지 않습니다. CI의 Python(`actions/setup-python`)은
+python.org의 macos11 universal2 빌드라 OpenSSL까지 번들 전체가 `minos 11.0`으로 고정입니다.
 릴리스할 때 사람이 하는 일은 `pyproject.toml`의 `version` 한 줄을 올리는 것뿐입니다.
 같은 버전으로 다시 푸시하면 이미 그 릴리스가 있으므로 빌드 없이 건너뜁니다.
 

@@ -6,11 +6,12 @@
 ### [⬇︎ 최신 버전 내려받기 (.dmg)](https://github.com/hsol/jaso/releases/latest)
 
 <!-- 서명·공증된 DMG가 릴리스에 올라가면 아래 문단을 지우고 원래 문장으로 되돌리세요:
-     "Apple Silicon(M1 이상) 맥 전용, macOS 13.6 이상. 인텔 맥에서는 실행되지 않습니다.
+     "Apple Silicon(M1 이상) 맥 전용, macOS 11 이상. 인텔 맥에서는 실행되지 않습니다.
       Apple Developer ID로 서명·공증했으므로 "확인되지 않은 개발자" 경고 없이 바로 실행됩니다."
-     지원 범위 문장의 근거는 티켓 3f5a8355(릴리스 DMG 실측). 빌드 머신이 바뀌면 최소 버전도
-     바뀌므로, DMG를 새로 올릴 때 otool로 다시 읽고 이 숫자를 맞춘다. -->
-**Apple Silicon(M1 이상) 맥 전용, macOS 13.6 이상**이 필요합니다. 인텔 맥에서는 실행되지 않습니다.
+     이 숫자는 setup.py의 LSMinimumSystemVersion과 같은 값이어야 하고, 번들의 실제 minos가
+     그보다 높으면 scripts/build_dmg.sh가 빌드를 세운다(티켓 6ad582ef). 손으로 맞출 필요는 없고,
+     빌드가 서면 그때 세 곳(setup.py·여기·아래 문장)을 함께 올린다. -->
+**Apple Silicon(M1 이상) 맥 전용, macOS 11 이상**이 필요합니다. 인텔 맥에서는 실행되지 않습니다.
 지금 릴리스에 올라가 있는 `jaso-0.1.0.dmg`는 서명·공증 기능이 생기기 전에 만들어진
 파일이라 macOS가 실행을 막습니다(실측: `spctl -a -t open` → `rejected`). 서명·공증된 새 버전을
 올리는 중이고, 그때까지 쓰시려면 [직접 빌드](docs/DEVELOPMENT.md)해 주세요.
