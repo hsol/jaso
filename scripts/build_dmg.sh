@@ -85,10 +85,30 @@ plutil -replace CFBundleExecutable -string jaso "dist/${APP_NAME}.app/Contents/I
 # 안쪽(.so/.dylib/보조 실행파일)부터 서명하고 마지막에 .app 을 서명한다.
 # codesign --deep 은 애플이 권장하지 않고 공증에서 자주 반려되므로 쓰지 않는다.
 if [ -n "$SIGN_ID" ]; then
+    # 서명 대상은 확장자가 아니라 내용으로 찾는다. 이름 패턴(*.so, *.dylib, MacOS/python)은
+    # Contents/Frameworks/Python.framework/Versions/3.11/Python 처럼 확장자 없는 Mach-O를 놓치고,
+    # 그게 그대로 공증 반려로 돌아온다(실측: 릴리스 run 30689734971 —
+    #   "The binary is not signed with a valid Developer ID certificate" x2
+    #   "The signature does not include a secure timestamp" x2, 경로는 모두 위 Python).
+    # 이 프레임워크는 CI의 python.org framework 빌드에만 생긴다. Homebrew Python으로 만드는
+    # 로컬 빌드에는 아예 없어서 로컬에서는 영영 재현되지 않는다 — 이름 패턴이 8개월을 버틴 이유다.
+    # 주의 1: `file`은 유니버설 바이너리를 아키텍처마다 한 줄씩 찍는다
+    #   ("...so (for architecture arm64): application/x-mach-binary"). 그 꼬리를 떼고 중복을 없애지
+    #   않으면 존재하지 않는 경로가 codesign에 넘어간다.
+    # 주의 2: 메인 실행파일(Contents/MacOS/jaso)은 뺀다. 아래 앱 서명이 그것을 서명한다.
     echo "🔏 번들 내부 바이너리를 서명합니다..."
-    find "dist/${APP_NAME}.app/Contents" \
-        \( -name '*.so' -o -name '*.dylib' -o -path '*/MacOS/python' \) \
-        -exec codesign --force --options runtime --timestamp -s "$SIGN_ID" {} +
+    MACHO=$(find "dist/${APP_NAME}.app/Contents" -type f ! -path '*/MacOS/jaso' \
+        -exec file --mime-type {} + \
+        | sed -n 's/ (for architecture [^)]*)//; s/:[[:space:]]*application\/x-mach-binary$//p' \
+        | sort -u)
+    if [ -z "$MACHO" ]; then
+        # 매칭이 조용히 비면 미서명 번들이 그대로 공증까지 흘러간다. 여기서 세운다.
+        echo "❌ 번들에서 Mach-O를 하나도 못 찾았습니다 — 서명이 통째로 비어버립니다."
+        exit 1
+    fi
+    printf '%s\n' "$MACHO" | tr '\n' '\0' \
+        | xargs -0 codesign --force --options runtime --timestamp -s "$SIGN_ID"
+    echo "✅ 내부 바이너리 $(printf '%s\n' "$MACHO" | wc -l | tr -d ' ')개를 서명했습니다."
 
     # assets/jaso.entitlements 는 disable-library-validation 하나만 담는다. 실측 결과다
     # (ad-hoc + --options runtime 으로 서명해 앱을 띄우고 NFD 파일을 떨궈 정규화까지 확인):
