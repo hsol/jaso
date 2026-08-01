@@ -1,72 +1,35 @@
 # 자소
 
-mac OSX 사용자들을 위한 한글 자소분리 방지 앱
+맥에서 만든 파일·폴더 이름의 한글이 윈도우에서 깨지는 것(자소분리)을 자동으로 막아주는 맥 앱입니다.
+감시할 폴더 하나만 지정해두면, 그 안에서 새로 생기거나 이름이 바뀌는 파일을 알아서 NFC로 되돌립니다.
 
-`Python 3.11`
+### [⬇︎ 최신 버전 내려받기 (.dmg)](https://github.com/hsol/jaso/releases/latest)
 
-## 앱 초기설정
+macOS 전용. Apple Developer ID로 서명·공증했으므로 "확인되지 않은 개발자" 경고 없이 바로 실행됩니다.
 
-### poetry(python 패키지 매니저) 설치
+## 무슨 문제인가요
 
-```
-pip install poetry
-```
+맥(APFS/HFS+)은 파일명 한글을 **NFD**로 저장합니다. `각`을 `ㄱ + ㅏ + ㄱ`처럼 자모로 쪼개서 씁니다.
+반면 윈도우와 대부분의 소프트웨어는 **NFC**를 씁니다. `각`을 글자 하나로 씁니다.
 
-또는 Brew 로 설치
-
-```
-brew install poetry
-```
-
-### 패키지 설치
+그래서 맥에서 `이렇게 됩니다.txt`로 저장한 파일을 구글 드라이브·원드라이브·웹하드로 공유하면
+윈도우 쪽에서는 이렇게 보입니다.
 
 ```
-eval $(poetry env activate)
-poetry install
+ㅇㅣㄹㅓㅎㄱㅔㄷㅗㅣㅂㄴㅣㄷㅏ.txt
 ```
 
-## 앱 개발
+10년 넘게 고쳐지지 않은 문제라서, 맥과 윈도우를 오가며 협업하면 계속 마주치게 됩니다.
 
-```
-poetry run python src/main.py
-```
+## 기존 방식과 뭐가 다른가요
 
-## 앱 빌드
+지금까지는 `Contact`나 `반디네이머` 같은 도구로 그때그때 일괄 변환하거나,
+`convmv -r -f utf-8 -t utf-8 --nfc .` 같은 명령을 직접 돌려서 해결했습니다.
+문제는 **한 번 고쳐도 끝이 아니라는 것**입니다. 맥에서 파일을 하나 더 만들거나 이름만 바꿔도
+그 파일은 다시 NFD가 되고, 윈도우 쪽 동료는 또 깨진 이름을 봅니다.
 
-### 기본 앱 빌드
-
-```bash
-./scripts/build.sh
-```
-
-### 설치 파일(DMG) 생성
-
-```bash
-./scripts/build_dmg.sh
-```
-
-생성된 DMG 파일을 더블클릭하여 마운트한 후, `자소.app`을 `Applications` 폴더로 드래그 앤 드롭하여 설치할 수 있습니다.
-
-### 릴리스
-
-`main`에 푸시하면 GitHub Actions가 DMG를 빌드해 릴리스를 올립니다.
-릴리스할 때 사람이 하는 일은 `pyproject.toml`의 `version` 한 줄을 올리는 것뿐입니다.
-같은 버전으로 다시 푸시하면 이미 그 릴리스가 있으므로 빌드 없이 건너뜁니다.
-
-#### 필요한 GitHub Secrets
-
-릴리스는 서명된 DMG만 올립니다. 아래 값은 저장소 **Settings → Secrets and variables → Actions**에
-넣어 두어야 하고, **하나라도 비어 있으면 릴리스 워크플로가 빌드 전에 실패합니다**
-(미서명 DMG가 릴리스에 올라가는 일을 막기 위해서입니다).
-
-| 이름 | 무엇이고 어디서 나오나 |
-|---|---|
-| `CERT_P12_BASE64` | Developer ID Application 인증서를 키체인 접근에서 `.p12`로 내보낸 뒤 `base64 -i cert.p12 \| pbcopy` 한 값 |
-| `CERT_PASSWORD` | 위 `.p12`를 내보낼 때 지정한 비밀번호 |
-| `TEAM_ID` | Apple Developer 계정의 10자리 팀 ID (developer.apple.com → Membership) |
-| `AC_KEY_ID` | 공증용. App Store Connect → 사용자 및 액세스 → 통합 → App Store Connect API 키의 Key ID |
-| `AC_ISSUER_ID` | 공증용. 같은 화면 위쪽에 있는 Issuer ID (팀 하나에 하나) |
-| `AC_KEY_P8_BASE64` | 공증용. API 키를 만들 때 한 번만 받는 `.p8` 파일을 base64로 인코딩한 값 |
+자소는 그 반복을 없앱니다. 폴더를 한 번 지정해두면 이후로는 감시하다가 자동으로 NFC를 유지하므로,
+변환을 "실행하는" 일 자체가 사라집니다.
 
 ## 앱 사용하기
 
@@ -109,6 +72,6 @@ poetry run python src/main.py
 
 ![image](https://github.com/hsol/jaso/assets/1524891/6a7a0b96-a263-44ea-82fa-54264aefa1cc)
 
-### (deprecated)가이드 영상 업데이트필요
+## 개발자라면
 
-https://github.com/hsol/jaso/assets/1524891/67e1994b-a43d-4c8d-bf66-05993ec9ef29
+빌드·릴리스·서명 설정은 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)에 있습니다.
