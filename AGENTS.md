@@ -65,7 +65,7 @@ py2app 번들 안에서 값들이 개발 실행과 다르다. 추측하지 말�
 - `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`를 rumps import 전에 설정한다 (`src/main.py:4`). 순서 유지.
 - `ICON_PATH`는 두 실행 환경을 모두 커버한다: 번들에서는 cwd가 `Contents/Resources`라 `icon.icns`가 그대로 잡히고, 개발 실행에서는 `assets/icon.icns`로 폴백한다. 아이콘 위치를 옮기면 `setup.py`의 `iconfile`·`DATA_FILES`와 함께 고쳐야 한다.
 - 메뉴 항목 제목이 곧 키다 (`self.menu["대상 폴더 선택"]`). 한글 문자열을 바꾸면 조회 코드도 같이 고쳐야 한다.
-- 버전이 세 곳에 흩어져 있다: `pyproject.toml`(0.1.0), `setup.py`의 `version`(0.0.1)과 `CFBundleShortVersionString`(0.1.0), `build_dmg.sh`의 `VERSION`. 릴리스 시 전부 맞출 것.
+- 버전 출처는 `pyproject.toml`의 `version` 하나다. 릴리스할 땐 여기만 고친다 — `setup.py`(`version`·`CFBundleShortVersionString`)와 `build_dmg.sh`(`VERSION`)가 `tomllib`로 읽어 간다. `setup.py`의 `CFBundleVersion`('1')은 macOS 빌드 번호라 별개다. DMG 파일명은 `jaso-<버전>.dmg`로 ASCII 고정(볼륨명·앱 이름은 `자소` 그대로).
 - 파일명 조작 코드다. rename 실패는 `normalize_quietly()`가 삼켜 로그만 남긴다 — 한 경로의 실패가 전체 순회를 멈추지 않게 하는 의도이니 유지.
 - `Handler.on_any_event`의 `try/except`도 유지. watchdog 감시 스레드로 예외가 새어나가면 스레드가 죽고 감시가 **조용히** 멈춘다(알림도 없다). 이 핸들러가 그 경계다.
 

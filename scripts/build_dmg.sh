@@ -9,8 +9,10 @@ echo "🚀 자소 앱 DMG 설치 파일 생성을 시작합니다..."
 
 # 변수 설정
 APP_NAME="자소"
-VERSION="0.1.0"
-DMG_NAME="${APP_NAME}-${VERSION}.dmg"
+# 버전의 유일한 출처는 pyproject.toml (setup.py도 같은 값을 읽는다)
+VERSION=$(poetry run python -c 'import tomllib,pathlib;print(tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))["tool"]["poetry"]["version"])')
+# 파일명만 ASCII. 볼륨명·앱 이름은 한글 그대로 — 브라우저·CI가 한글 파일명을 깨뜨린다
+DMG_NAME="jaso-${VERSION}.dmg"
 VOLUME_NAME="${APP_NAME}"
 
 # 기존 빌드 파일 정리
