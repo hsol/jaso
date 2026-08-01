@@ -36,6 +36,55 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # secret이 하나라도 없으면 미서명 DMG가 릴리스에 올라간다(build_dmg.sh는 인증서가 없으면
+      # 경고만 남기고 계속 빌드한다). 그러니 빌드 앞에서 죽인다.
+      # skip=true(버전 안 올린 평범한 푸시)일 때는 건너뛴다 — 빌드도 안 하는데 빨간 X를 남길 이유가 없다.
+      - name: 릴리스 secret 확인
+        if: steps.check.outputs.skip == 'false'
+        env:
+          CERT_P12_BASE64: ${{ secrets.CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          MISSING=""
+          for NAME in CERT_P12_BASE64 CERT_PASSWORD TEAM_ID; do
+            [ -n "${!NAME}" ] || MISSING="$MISSING $NAME"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::릴리스에 필요한 secret이 비어 있습니다:$MISSING (저장소 Settings → Secrets and variables → Actions에서 넣으세요. README의 '릴리스' 절 참고)"
+            exit 1
+          fi
+          echo "필요한 secret이 모두 있습니다."
+
+      # GitHub 러너 키체인에는 인증서가 없다. secret의 .p12를 임시 키체인에 넣어 codesign이 찾게 한다.
+      # set-key-partition-list를 빼먹으면 codesign이 비밀번호 프롬프트를 띄우려다 errSecInternalComponent로 죽는다.
+      - name: 서명 인증서 임시 키체인에 넣기
+        if: steps.check.outputs.skip == 'false'
+        env:
+          CERT_P12_BASE64: ${{ secrets.CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          P12="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PASSWORD=$(uuidgen)   # 러너 안에서만 사는 값이라 이 스텝 밖으로 내보내지 않는다
+
+          echo "$CERT_P12_BASE64" | base64 -D > "$P12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"   # 빌드 도중 자동 잠금 금지
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$P12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security
+          # 기존 검색 경로를 유지한 채 임시 키체인을 앞에 붙인다(-s는 목록을 통째로 갈아치운다).
+          # 따옴표뿐 아니라 공백까지 지우는 건 취향이 아니다: list-keychains 출력은 들여쓰기가 붙어 나오고,
+          # 선행 공백이 남은 경로를 -s로 넣으면 security가 상대경로로 보고 "/Library/Keychains/"를 앞에
+          # 붙여 존재하지 않는 항목을 만든다(실측 확인). 그러면 login.keychain이 검색 경로에서 빠진다.
+          # ponytail: 경로에 공백이 있으면 이 방식이 깨진다 — 러너 경로에는 없다. 깨지면 xargs로 바꾸면 된다.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '" ')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          rm -f "$P12"
+
+          # 인증서가 실제로 잡혔는지 눈으로 보는 줄. 여기 이름이 안 나오면 아래 빌드는 미서명이 된다.
+          security find-identity -v -p codesigning
+
       # ponytail: 설치·빌드·릴리스를 한 스텝에 몰았다. if 조건이 하나면 되고 로그도 한 덩어리다.
       # 천장: poetry 캐시가 없어 매번 새로 받는다(2~3분). 릴리스는 버전 올릴 때만 도니 아직 아깝지 않다 —
       # 릴리스가 잦아지면 actions/cache로 ~/Library/Caches/pypoetry를 잡으면 된다.
@@ -49,3 +98,10 @@ jobs:
           poetry install
           ./scripts/build_dmg.sh
           gh release create "v$VERSION" "jaso-$VERSION.dmg" --generate-notes
+
+      # 실패해도 러너에 인증서를 남기지 않는다. 키체인을 지우면 검색 경로에서도 함께 빠진다.
+      - name: 키체인 · 인증서 파일 정리
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12"
