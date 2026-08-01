@@ -23,8 +23,20 @@ ICON_PATH = ('icon.icns' if os.path.exists('icon.icns')
 AUTOSTART_LABEL = 'tech.proofer.jaso'
 AUTOSTART_PLIST = os.path.expanduser(f'~/Library/LaunchAgents/{AUTOSTART_LABEL}.plist')
 
-# Application Support/자소/ 안에 저장되는 감시 폴더 경로 파일 (rumps.App.open 이 위치를 잡아준다)
+# Application Support/자소/ 안에 저장되는 감시 폴더 목록 파일 (rumps.App.open 이 위치를 잡아준다)
 WATCHED_DIRECTORY_FILE = 'watched_directory'
+
+
+def parse_watched_directories(text: str) -> list[str]:
+    # 저장 형식은 "한 줄에 폴더 하나". 예전의 한 줄짜리 파일이 그대로 1개 목록으로 읽히므로
+    # 마이그레이션 코드가 필요 없다. 반대 방향은 '\n'.join(dirs) 한 줄이라 함수로 만들지 않는다.
+    # 지워진 폴더와 중복은 여기서 조용히 빠진다.
+    directories: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line and line not in directories and os.path.isdir(line):
+            directories.append(line)
+    return directories
 
 
 def launch_arguments():
@@ -138,28 +150,27 @@ def normalize_filenames_in_directory(directory):
 
 class Watcher:
     # 파일 시스템의 변경을 감시하는 watchdog 클래스입니다.
+    # Observer 하나에 여러 폴더를 걸 수 있으므로 폴더가 늘어도 스레드와 타이머는 하나뿐이다.
     observer: Observer | None = None
     timer: rumps.Timer | None = None
 
-    def __init__(self, directory_to_watch):
-        self.directory_to_watch = directory_to_watch
+    def watch(self, directory_to_watch):
+        # 이미 도는 Observer에 경로를 하나 더 건다 — 기존 폴더의 감시는 끊기지 않는다.
+        if self.observer is None:
+            self.observer = Observer()
+            self.observer.start()
 
-    def run(self):
-        event_handler = Handler()
+            def _maintainer(timer: rumps.Timer):
+                if self.observer.is_alive():
+                    self.observer.join(1)
 
-        self.observer and self.observer.stop()
-        self.observer = Observer()
-        self.observer.schedule(event_handler, self.directory_to_watch, recursive=True)
-        self.observer.start()
+            self.timer = rumps.Timer(_maintainer, 1)
+            self.timer.start()
 
-        def _maintainer(timer: rumps.Timer):
-            if self.observer.is_alive():
-                self.observer.join(1)
-
-        self.timer = rumps.Timer(_maintainer, 1)
-        self.timer.start()
+        self.observer.schedule(Handler(), directory_to_watch, recursive=True)
 
     def stop(self):
+        # 걸어둔 경로가 몇 개든 Observer가 하나라 한 번의 stop으로 감시 스레드가 전부 정지한다.
         try:
             self.observer.stop()
             self.observer.join()
@@ -167,6 +178,8 @@ class Watcher:
             pass
         finally:
             self.timer and self.timer.stop()
+            self.observer = None
+            self.timer = None
 
 
 class Handler(FileSystemEventHandler):
@@ -197,59 +210,43 @@ class JasoRumpsApp(rumps.App):
     def __init__(self, *args, **kwargs):
         super().__init__(name="자소", icon=ICON_PATH, quit_button=None)
 
-        self.watcher: Watcher | None = None
+        self.watcher = Watcher()
         self.icon_path = ICON_PATH
-        self.watched_directory = None
+        self.watched_directories: list[str] = []
         self.convert_menu_item = None
 
-    # 감시 폴더 기억: rumps가 만들어주는 Application Support 폴더에 경로 한 줄만 저장한다.
+    # 감시 폴더 기억: rumps가 만들어주는 Application Support 폴더에 한 줄에 하나씩 저장한다.
     # 번들의 기본 인코딩이 ASCII라 한글 경로가 깨지므로 반드시 바이너리 + utf-8 로 다룬다.
-    def _load_watched_directory(self):
+    def _load_watched_directories(self) -> list[str]:
         try:
             with self.open(WATCHED_DIRECTORY_FILE, 'rb') as f:
-                directory = f.read().decode('utf-8')
+                return parse_watched_directories(f.read().decode('utf-8'))
         except (OSError, UnicodeDecodeError):
-            return None
-        return directory if os.path.isdir(directory) else None
+            return []
 
-    def _save_watched_directory(self, directory):
+    def _save_watched_directories(self):
         try:
             with self.open(WATCHED_DIRECTORY_FILE, 'wb') as f:
-                f.write((directory or '').encode('utf-8'))
+                f.write('\n'.join(self.watched_directories).encode('utf-8'))
         except OSError as e:
             print('감시 폴더 저장 실패:', e)
 
     def _start_watching(self, directory_path):
-        # 폴더 선택과 시작 시 자동 복원이 공유하는 경로
+        # 폴더 선택과 시작 시 자동 복원이 공유하는 경로. 목록에 하나를 더한다.
         _failed_paths.clear()  # 새 감시 시작이면 지난 실패 기록은 무효
-        self.watched_directory = directory_path
-        folder_name = os.path.basename(directory_path)
-        self.menu["대상 폴더 선택"].title = f"다시선택 ({folder_name}에서 변환 중)"
+        self.watched_directories.append(directory_path)
+        self.menu["대상 폴더 선택"].title = f"폴더 추가 ({len(self.watched_directories)}곳 감시 중)"
 
         # 한번에 변환 메뉴 추가
         if self.convert_menu_item is None:
             self.convert_menu_item = rumps.MenuItem("한번에 변환", callback=self._convert_once)
             self.menu.insert_before("로그인 시 자동실행", self.convert_menu_item)
 
-        self.watcher = Watcher(directory_path)
-        self.watcher.run()
+        self.watcher.watch(directory_path)
 
     @rumps.clicked("대상 폴더 선택")
     def _select_directory(self, _):
         try:
-            if self.watcher:
-                self.watcher.stop()
-                self.watched_directory = None
-                self._save_watched_directory('')
-                self.menu["대상 폴더 선택"].title = "대상 폴더 선택"
-
-                # 한번에 변환 메뉴 제거
-                if self.convert_menu_item:
-                    self.menu.pop(self.convert_menu_item.title)
-                    self.convert_menu_item = None
-                
-                rumps.alert(message="이미 실행 중이던 작업을 중단했습니다.", icon_path=self.icon_path)
-            
             # AppKit 초기화 및 권한 확인
             if not NSApplication.sharedApplication():
                 NSApplication.sharedApplication()
@@ -280,10 +277,12 @@ class JasoRumpsApp(rumps.App):
             if directory_path:
                 if not os.path.isdir(directory_path):
                     rumps.alert("유효하지 않은 폴더입니다.", icon_path=self.icon_path)
+                elif os.path.normpath(directory_path) in map(os.path.normpath, self.watched_directories):
+                    rumps.alert("이미 감시 중인 폴더입니다.", icon_path=self.icon_path)
                 else:
                     self._start_watching(directory_path)
-                    self._save_watched_directory(directory_path)
-                    rumps.alert("폴더가 설정되었습니다. 이제부터 해당 폴더에서 자동으로 한글의 자소분리가 방지됩니다.", icon_path=self.icon_path)
+                    self._save_watched_directories()
+                    rumps.alert(f"폴더가 추가되었습니다. 이제 {len(self.watched_directories)}곳에서 자동으로 한글의 자소분리가 방지됩니다.", icon_path=self.icon_path)
             else:
                 rumps.alert("폴더를 선택하지 않았습니다.", icon_path=self.icon_path)
         except Exception as e:
@@ -291,22 +290,24 @@ class JasoRumpsApp(rumps.App):
 
     def _convert_once(self, _):
         try:
-            if not self.watched_directory:
+            if not self.watched_directories:
                 rumps.alert("먼저 대상 폴더를 선택해주세요.", icon_path=self.icon_path)
                 return
-            
-            if not os.path.isdir(self.watched_directory):
-                rumps.alert("선택된 폴더가 더 이상 유효하지 않습니다.", icon_path=self.icon_path)
-                return
-            
+
             # 수동 실행은 재시도 기회다 — 권한을 고쳤을 수 있으니 실패 기록을 비우고 다시 훑는다
             _failed_paths.clear()
 
-            # 선택된 폴더 내 모든 파일과 폴더명을 한번에 변환
-            processed_count = normalize_filenames_in_directory(self.watched_directory)
-            folder_name = os.path.basename(self.watched_directory)
+            # 등록된 모든 폴더의 파일과 폴더명을 한번에 변환 (폴더별 건수를 알림에 그대로 보여준다)
+            lines = []
+            for directory in self.watched_directories:
+                folder_name = os.path.basename(directory)
+                if not os.path.isdir(directory):
+                    lines.append(f"{folder_name}: 폴더를 찾을 수 없음")
+                    continue
+                lines.append(f"{folder_name}: {normalize_filenames_in_directory(directory)}개")
+
             failed_note = f"\n건너뛴 항목: {len(_failed_paths)}개 (권한 등으로 이름 변경 실패)" if _failed_paths else ""
-            rumps.alert(f"변환 완료!\n\n폴더: {folder_name}\n처리된 항목 수: {processed_count}개{failed_note}\n\n모든 파일과 폴더명이 NFD에서 NFC로 변환되었습니다.", icon_path=self.icon_path)
+            rumps.alert("변환 완료!\n\n" + "\n".join(lines) + f"{failed_note}\n\n모든 파일과 폴더명이 NFD에서 NFC로 변환되었습니다.", icon_path=self.icon_path)
         except Exception as e:
             rumps.alert(f"오류: {str(e)}")
 
@@ -315,9 +316,8 @@ class JasoRumpsApp(rumps.App):
         # 메뉴는 run() 시점에 만들어지므로 __init__ 이 아니라 여기서 상태를 맞춘다.
         self.menu["로그인 시 자동실행"].state = autostart_enabled()
 
-        directory = self._load_watched_directory()
-        if directory:
-            # 시작 시 복원은 조용히 — 로그인 자동실행 때 알림창이 뜨면 곤란하다.
+        # 시작 시 복원은 조용히 — 로그인 자동실행 때 알림창이 뜨면 곤란하다.
+        for directory in self._load_watched_directories():
             self._start_watching(directory)
 
     @rumps.clicked("로그인 시 자동실행")
@@ -337,10 +337,8 @@ class JasoRumpsApp(rumps.App):
 
     @rumps.clicked("종료")
     def _quit(self, _):
-        if self.watcher:
-            self.watcher.stop()
-            self.watched_directory = None
-        
+        self.watcher.stop()
+        self.watched_directories = []
         rumps.quit_application()
 
 
@@ -363,6 +361,21 @@ def _selfcheck():
         set_autostart(False, plist)
         assert not autostart_enabled(plist)
         set_autostart(False, plist)  # 두 번 꺼도 예외 없음
+
+    # 감시 폴더 목록: 저장 문자열 ↔ 목록 왕복 검증
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = os.path.join(tmp, '가나'), os.path.join(tmp, 'b')
+        os.makedirs(a)
+        os.makedirs(b)
+        missing = os.path.join(tmp, '없는폴더')
+
+        assert parse_watched_directories(a) == [a], '한 줄짜리 옛 파일'
+        assert parse_watched_directories(f'{a}\n{b}') == [a, b], '여러 줄'
+        assert parse_watched_directories(f'\n{a}\n\n  \n{b}\n') == [a, b], '빈 줄 무시'
+        assert parse_watched_directories(f'{a}\n{missing}\n{b}') == [a, b], '없는 경로 제외'
+        assert parse_watched_directories(f'{a}\n{a}') == [a], '중복 제거'
+        assert parse_watched_directories('') == [], '빈 파일'
+        assert parse_watched_directories('\n'.join([a, b])) == [a, b], '왕복'
     print('OK:', launch_arguments())
 
 
