@@ -173,6 +173,23 @@ def track(name, **params):
     threading.Thread(target=_post_event, args=(name, params), daemon=True).start()
 
 
+# 감시 중 자동 변환은 이 앱이 하는 일의 전부인데, 이벤트는 초당 수십 건까지 간다.
+# 건당 한 통씩 보내면 그게 폭주다 — 합계를 들고 있다가 한 시간에 한 번만 내보낸다.
+# ponytail: 락 없음 — 값을 더하고 비우는 게 전부고 감시 스레드 하나가 부른다
+AUTO_INTERVAL = 3600
+_auto = {'renamed': 0, 'since': time.time()}
+
+
+def track_auto(renamed):
+    _auto['renamed'] += renamed
+    # 바꾼 게 없으면 시계를 건드리지 않는다 — 조용하던 폴더에서 처음 바뀐 한 건은 바로 나간다.
+    # (앱이 언제 꺼질지 모르므로 한 시간을 기다리다 통째로 잃는 것보다 낫다.)
+    if not _auto['renamed'] or time.time() - _auto['since'] < AUTO_INTERVAL:
+        return
+    track('auto_convert', renamed=_auto['renamed'])
+    _auto.update(renamed=0, since=time.time())
+
+
 def report_error(e, icon_path=None, what='오류'):
     # 예외는 사용자에게 한 줄, 로그에 전부. 번들에서 사후에 읽을 수 있는 유일한 자국이다.
     traceback.print_exc()
@@ -245,16 +262,18 @@ def set_autostart(enabled: bool, plist_path: str = AUTOSTART_PLIST):
         }, f)
 
 
-def normalize_path(path: str):
+def normalize_path(path: str) -> bool:
     # 주어진 파일 경로의 이름을 NFC 유니코드 형식으로 정규화하고 파일명을 변경합니다.
     # 길이 비교가 아니라 문자열 비교를 쓴다 — 길이가 같은데 코드포인트가 다른 정규화도 있다.
+    # 반환값은 "실제로 이름을 바꿨는가". 훑은 개수와 바꾼 개수는 다른 수다.
     directory, name = os.path.split(path)
     normalized_name = unicodedata.normalize('NFC', name)
     if name == normalized_name:
-        return
+        return False
 
     normalized_path = os.path.join(directory, normalized_name)
     os.rename(path, normalized_path)
+    return True
 
 
 def resolve_stored_path(path: str):
@@ -286,8 +305,7 @@ def normalize_quietly(path_type: str, path: str) -> bool:
     if path in _failed_paths:
         return False
     try:
-        normalize_path(path)
-        return True
+        return normalize_path(path)  # 안 바꿨으면 False — 세는 건 바뀐 것뿐이다
     except Exception as e:
         _failed_paths.add(path)
         print(f"{path_type} 처리 중 오류 발생(이후 건너뜀): {path}, 오류: {e}")
@@ -297,7 +315,8 @@ def normalize_quietly(path_type: str, path: str) -> bool:
 
 def normalize_filenames_in_directory(directory):
     # 주어진 폴더와 그 하위 폴더에 있는 모든 파일의 이름을 NFC로 정규화합니다.
-    processed_count = 0
+    # 돌려주는 수는 훑은 개수가 아니라 실제로 이름을 바꾼 개수다.
+    renamed_count = 0
 
     # 모든 경로를 먼저 수집하여 상위 폴더 변경의 영향을 받지 않도록 함
     all_paths = []
@@ -320,9 +339,9 @@ def normalize_filenames_in_directory(directory):
     # 수집된 경로들을 역순으로 처리 (가장 깊은 것부터)
     for path_type, path in reversed(all_paths):
         if normalize_quietly(path_type, str(path)):
-            processed_count += 1
+            renamed_count += 1
 
-    return processed_count
+    return renamed_count
 
 
 class Watcher:
@@ -382,7 +401,7 @@ class Handler(FileSystemEventHandler):
             # 이벤트가 준 NFD 경로를 실제 저장된 이름으로 되돌린 뒤에 처리한다.
             path = resolve_stored_path(path)
             if path is not None:
-                normalize_filenames_in_directory(path)
+                track_auto(normalize_filenames_in_directory(path))
         except Exception as e:
             print(f"이벤트 처리 중 오류 발생: {event.event_type} {event.src_path}, 오류: {e}")
             traceback.print_exc()
@@ -532,18 +551,18 @@ class JasoRumpsApp(rumps.App):
 
             # 등록된 모든 폴더의 파일과 폴더명을 한번에 변환 (폴더별 건수를 알림에 그대로 보여준다)
             lines = []
-            processed = 0
+            renamed = 0
             for directory in self.watched_directories:
                 folder_name = os.path.basename(directory)
                 if not os.path.isdir(directory):
                     lines.append(f"{folder_name}: 폴더를 찾을 수 없음")
                     continue
                 count = normalize_filenames_in_directory(directory)
-                processed += count
+                renamed += count
                 lines.append(f"{folder_name}: {count}개")
 
             track('convert_once', watched_count=len(self.watched_directories),
-                  processed=processed, skipped=len(_failed_paths))
+                  processed=renamed, skipped=len(_failed_paths))
 
             failed_note = f"\n건너뛴 항목: {len(_failed_paths)}개 (권한 등으로 이름 변경 실패)" if _failed_paths else ""
             alert("변환 완료!\n\n" + "\n".join(lines) + f"{failed_note}\n\n모든 파일과 폴더명이 NFD에서 NFC로 변환되었습니다.", icon_path=self.icon_path)
@@ -668,6 +687,33 @@ def _selfcheck():
     assert '"name": "folder_add"' in body and 'session_id' in body, body
     assert os.path.expanduser('~') not in body, body
     assert 'watched_count' in body and body.count('/') == 0, body
+
+    # 세는 수는 "훑은 개수"가 아니라 "실제로 이름을 바꾼 개수"다
+    with tempfile.TemporaryDirectory() as tmp:
+        nfc_name = unicodedata.normalize('NFC', '한글.txt')
+        nfd_path = os.path.join(tmp, unicodedata.normalize('NFD', '한글.txt'))
+        open(nfd_path, 'w').close()
+        assert normalize_path(nfd_path) is True, 'NFD면 바꾼다'
+        assert os.listdir(tmp) == [nfc_name], os.listdir(tmp)
+        assert normalize_path(os.path.join(tmp, nfc_name)) is False, '이미 NFC면 아무 일도 없다'
+        assert normalize_filenames_in_directory(tmp) == 0, '바꿀 게 없으면 0개'
+
+    # 자동 변환은 합계를 모아 한 시간에 한 번만 나간다
+    sent, real_track = [], track
+    globals()['track'] = lambda name, **params: sent.append((name, params))
+    try:
+        _auto.update(renamed=0, since=time.time())
+        track_auto(3)
+        assert sent == [], '한 시간 안에는 보내지 않는다'
+        assert _auto['renamed'] == 3, _auto
+        _auto['since'] -= AUTO_INTERVAL + 1
+        track_auto(2)
+        assert sent == [('auto_convert', {'renamed': 5})], sent
+        assert _auto['renamed'] == 0, '보낸 뒤에는 합계를 비운다'
+        track_auto(0)
+        assert len(sent) == 1, '바꾼 게 없으면 보내지 않는다'
+    finally:
+        globals()['track'] = real_track
 
     _selfcheck_menu()
     print('OK:', launch_arguments())

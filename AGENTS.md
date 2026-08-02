@@ -69,7 +69,9 @@ py2app 번들 안에서 값들이 개발 실행과 다르다. 추측하지 말�
 - 메뉴 항목 제목이 곧 키다 (`self.menu["대상 폴더 선택"]`). 한글 문자열을 바꾸면 조회 코드도 같이 고쳐야 한다.
 - 버전 출처는 `pyproject.toml`의 `version` 하나다. 릴리스할 땐 여기만 고친다 — `setup.py`(`version`·`CFBundleShortVersionString`)와 `build_dmg.sh`(`VERSION`)가 `tomllib`로 읽어 간다. `setup.py`의 `CFBundleVersion`('1')은 macOS 빌드 번호라 별개다. DMG 파일명은 `jaso-<버전>.dmg`로 ASCII 고정(볼륨명·앱 이름은 `자소` 그대로).
 - 파일명 조작 코드다. rename 실패는 `normalize_quietly()`가 삼켜 로그만 남긴다 — 한 경로의 실패가 전체 순회를 멈추지 않게 하는 의도이니 유지.
-- **통계 이벤트에 경로·파일명을 넣지 말 것.** 파일명 감시 앱이 파일명을 밖으로 보내면 그 순간 성격이 달라진다. `_selfcheck`가 페이로드에 `/`와 홈 경로가 없는지 본다. 자동 변환(watchdog 이벤트)은 초당 수십 건이라 아예 보내지 않는다 — 필요해지면 시간당 합계로 묶을 것.
+- **통계 이벤트에 경로·파일명을 넣지 말 것.** 파일명 감시 앱이 파일명을 밖으로 보내면 그 순간 성격이 달라진다. `_selfcheck`가 페이로드에 `/`와 홈 경로가 없는지 본다.
+- 자동 변환은 이벤트가 초당 수십 건이라 건당 보내지 않는다. `track_auto()`가 합계를 들고 있다가 `AUTO_INTERVAL`(1시간)에 한 번만 `auto_convert`로 내보낸다. 여기서 건당 `track()`을 부르는 순간 폭주다.
+- `normalize_path()`의 반환값은 "실제로 이름을 바꿨는가"다. 이 값이 `normalize_quietly` → `normalize_filenames_in_directory`의 건수로 그대로 올라가 알림과 통계 숫자가 된다. 훑은 개수를 세도록 되돌리면 두 숫자가 같이 거짓이 된다.
 - 자격 증명·전송 확인은 `poetry run python src/main.py --ga-test` (GA 디버그 엔드포인트, `validationMessages`가 비면 정상).
 - `Handler.on_any_event`의 `try/except`도 유지. watchdog 감시 스레드로 예외가 새어나가면 스레드가 죽고 감시가 **조용히** 멈춘다(알림도 없다). 이 핸들러가 그 경계다.
 
