@@ -48,6 +48,8 @@ PYTHONIOENCODING=utf-8 "dist/자소.app/Contents/MacOS/자소" --selfcheck   # �
 6. 감시 폴더 기억 — `Application Support/자소/watched_directory`에 경로 한 줄. `rumps.App.open()`이 위치를 잡아주므로 별도 경로 계산 없음. **바이너리 + utf-8 명시** 필수(아래 ASCII 함정).
 7. `@rumps.events.before_start` 훅(`_restore_state`)에서 체크 상태와 감시 폴더를 모두 복원한다 — rumps는 `run()` 시점에 메뉴를 만들기 때문에 `__init__`에서는 `self.menu[...]`가 아직 없다. 복원은 알림창 없이 조용히 한다(로그인 자동실행 때 팝업이 뜨면 안 되므로).
 
+8. 사용 통계 — GA4 Measurement Protocol(`track()`)로 이벤트를 데몬 스레드에서 POST한다. 브라우저가 없으니 gtag.js는 못 쓴다. `Application Support/자소/analytics_off` 파일의 **존재 여부**가 곧 off(자동실행 plist와 같은 방식), `client_id`는 같은 폴더에 저장되는 설치별 임의 번호다.
+
 폴더 선택과 시작 시 복원은 `_start_watching()` 하나를 공유한다. 감시 시작 로직을 고칠 때는 여기만 고치면 된다.
 
 ## 번들 런타임의 함정 (실측)
@@ -67,6 +69,8 @@ py2app 번들 안에서 값들이 개발 실행과 다르다. 추측하지 말�
 - 메뉴 항목 제목이 곧 키다 (`self.menu["대상 폴더 선택"]`). 한글 문자열을 바꾸면 조회 코드도 같이 고쳐야 한다.
 - 버전 출처는 `pyproject.toml`의 `version` 하나다. 릴리스할 땐 여기만 고친다 — `setup.py`(`version`·`CFBundleShortVersionString`)와 `build_dmg.sh`(`VERSION`)가 `tomllib`로 읽어 간다. `setup.py`의 `CFBundleVersion`('1')은 macOS 빌드 번호라 별개다. DMG 파일명은 `jaso-<버전>.dmg`로 ASCII 고정(볼륨명·앱 이름은 `자소` 그대로).
 - 파일명 조작 코드다. rename 실패는 `normalize_quietly()`가 삼켜 로그만 남긴다 — 한 경로의 실패가 전체 순회를 멈추지 않게 하는 의도이니 유지.
+- **통계 이벤트에 경로·파일명을 넣지 말 것.** 파일명 감시 앱이 파일명을 밖으로 보내면 그 순간 성격이 달라진다. `_selfcheck`가 페이로드에 `/`와 홈 경로가 없는지 본다. 자동 변환(watchdog 이벤트)은 초당 수십 건이라 아예 보내지 않는다 — 필요해지면 시간당 합계로 묶을 것.
+- 자격 증명·전송 확인은 `poetry run python src/main.py --ga-test` (GA 디버그 엔드포인트, `validationMessages`가 비면 정상).
 - `Handler.on_any_event`의 `try/except`도 유지. watchdog 감시 스레드로 예외가 새어나가면 스레드가 죽고 감시가 **조용히** 멈춘다(알림도 없다). 이 핸들러가 그 경계다.
 
 ### 가장 중요한 함정: 이벤트가 주는 경로 이름은 항상 NFD다

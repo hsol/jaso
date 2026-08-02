@@ -1,9 +1,14 @@
+import json
 import os
 import plistlib
+import ssl
 import sys
+import threading
 import time
 import traceback
 import unicodedata
+import urllib.request
+import uuid
 import webbrowser
 # macOS 경고 메시지 숨기기
 os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES'
@@ -34,12 +39,17 @@ def bundle_path():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 
+def support_path(name):
+    # Application Support/자소/<name>. rumps가 폴더까지 만들어준다.
+    return os.path.join(rumps.application_support(APP_NAME), name)
+
+
 def start_logging():
     # 번들에서는 stdout/stderr가 갈 데가 없다 — print도 traceback도 그대로 사라진다.
     # (0e6628e4: 사용자가 오류를 만났는데 남은 증거가 알림창 스크린샷 한 장뿐이었다.)
     # 이 앱의 except는 전부 print/traceback을 쓰므로 문 하나만 파일로 돌리면 전부 남는다.
     # ponytail: 회전 없음 — 1MB 넘으면 통째로 버린다. 쌓여봐야 이벤트 처리 실패 로그다
-    path = os.path.join(rumps.application_support(APP_NAME), f'{APP_NAME}.log')
+    path = support_path(f'{APP_NAME}.log')
     if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
         os.remove(path)
     if bundle_path() is not None:  # 개발 실행은 터미널로 보는 게 낫다
@@ -71,9 +81,103 @@ def alert(*args, **kwargs):
 LOG_PATH = start_logging()
 
 
+# ---- 사용 통계 (GA4 Measurement Protocol) ----
+# 브라우저가 없는 앱이라 gtag.js 대신 서버용 엔드포인트로 직접 쏜다.
+# 나가는 값은 "무엇을 몇 번 했는가"뿐이다 — 폴더 경로·파일명은 절대 싣지 않는다(_selfcheck가 지킨다).
+# api_secret은 이 값이 노출돼도 읽기 권한은 없고 쓰기만 되는 키다. 클라이언트 앱이라 어차피 번들에 들어간다.
+GA_URL = ('https://www.google-analytics.com/{path}'
+          '?measurement_id=G-JXPBH4TWPD&api_secret=J41bqcEITaaGz7KPJL863Q')
+ANALYTICS_OFF_FILE = 'analytics_off'  # 이 파일이 있으면 한 건도 보내지 않는다
+_session_id = str(int(time.time()))
+_client_id = None
+
+
+def analytics_enabled(path: str = None) -> bool:
+    return not os.path.exists(path or support_path(ANALYTICS_OFF_FILE))
+
+
+def set_analytics(enabled: bool, path: str = None):
+    # 자동실행과 같은 방식 — 파일 하나의 존재 여부가 곧 on/off.
+    path = path or support_path(ANALYTICS_OFF_FILE)
+    if enabled:
+        if os.path.exists(path):
+            os.remove(path)
+    else:
+        open(path, 'w').close()
+
+
+def app_version():
+    # 버전별 사용을 보려면 번들의 Info.plist가 유일한 출처다. 개발 실행은 'dev'.
+    bundle = bundle_path()
+    if bundle is None:
+        return 'dev'
+    try:
+        with open(os.path.join(bundle, 'Contents', 'Info.plist'), 'rb') as f:
+            return plistlib.load(f).get('CFBundleShortVersionString', '?')
+    except Exception:
+        return '?'
+
+
+def client_id():
+    # 설치마다 고정된 임의 번호. 사람을 식별하지 않는다 — GA가 재방문을 셀 수 있을 정도만이다.
+    # 저장에 실패하면 다음 실행에 새 번호가 생긴다(통계가 조금 틀어질 뿐, 앱은 멀쩡하다).
+    global _client_id
+    if _client_id is None:
+        try:
+            with open(support_path('client_id')) as f:
+                _client_id = f.read().strip()
+        except OSError:
+            _client_id = ''
+        if not _client_id:
+            _client_id = f'{uuid.uuid4().int % 10 ** 10}.{int(time.time())}'
+            try:
+                with open(support_path('client_id'), 'w') as f:
+                    f.write(_client_id)
+            except OSError as e:
+                print('client_id 저장 실패:', e)
+    return _client_id
+
+
+def ga_payload(name, params):
+    # session_id와 engagement_time_msec이 없으면 GA4는 실시간 화면 말고 어디에도 이 이벤트를 세지 않는다.
+    return {'client_id': client_id(),
+            'events': [{'name': name,
+                        'params': {'session_id': _session_id,
+                                   'engagement_time_msec': 1,
+                                   'app_version': app_version(),
+                                   **params}}]}
+
+
+def _post_event(name, params, debug=False):
+    request = urllib.request.Request(
+        GA_URL.format(path='debug/mp/collect' if debug else 'mp/collect'),
+        json.dumps(ga_payload(name, params)).encode('utf-8'),
+        {'Content-Type': 'application/json'})
+    # py2app 번들의 ssl은 python.org 빌드의 CA 경로를 물려받는데 사용자 맥에는 그 경로가 없다.
+    # macOS가 늘 갖고 있는 루트 번들을 직접 쥐여준다(없으면 기본값).
+    cafile = '/etc/ssl/cert.pem'
+    context = ssl.create_default_context(cafile=cafile if os.path.exists(cafile) else None)
+    try:
+        with urllib.request.urlopen(request, timeout=5, context=context) as response:
+            return response.status, response.read().decode('utf-8', 'replace')
+    except Exception as e:
+        print('사용 통계 전송 실패:', e)  # 통계는 실패해도 앱이 하는 일과 무관하다
+        return None, str(e)
+
+
+def track(name, **params):
+    # 네트워크가 앱을 멈춰 세우지 않도록 데몬 스레드에서 보낸다. 실패는 로그 한 줄로 끝난다.
+    # ponytail: 큐·재시도·배치 없음 — 잃어도 되는 데이터고, 이벤트가 사용자 조작당 한 건이다
+    if not analytics_enabled():
+        return
+    threading.Thread(target=_post_event, args=(name, params), daemon=True).start()
+
+
 def report_error(e, icon_path=None, what='오류'):
     # 예외는 사용자에게 한 줄, 로그에 전부. 번들에서 사후에 읽을 수 있는 유일한 자국이다.
     traceback.print_exc()
+    # 통계에는 예외 종류만 — 메시지에는 폴더 경로가 섞여 나갈 수 있다.
+    track('error', what=what, kind=type(e).__name__)
     alert(f'{what}: {e}\n\n자세한 기록:\n{LOG_PATH}', icon_path=icon_path)
 
 
@@ -351,6 +455,7 @@ class JasoRumpsApp(rumps.App):
         self.watched_directories.remove(directory_path)
         self.watcher.unwatch(directory_path)
         del self.menu[directory_path]
+        track('folder_remove', watched_count=len(self.watched_directories))
 
         if not self.watched_directories:
             # 폴더가 없으면 목록도 변환할 것도 없다 — 초기 상태로 되돌린다.
@@ -409,6 +514,7 @@ class JasoRumpsApp(rumps.App):
                 else:
                     self._start_watching(directory_path)
                     self._save_watched_directories()
+                    track('folder_add', watched_count=len(self.watched_directories))
                     alert(f"폴더가 추가되었습니다. 이제 {len(self.watched_directories)}곳에서 자동으로 한글의 자소분리가 방지됩니다.", icon_path=self.icon_path)
             else:
                 alert("폴더를 선택하지 않았습니다.", icon_path=self.icon_path)
@@ -426,12 +532,18 @@ class JasoRumpsApp(rumps.App):
 
             # 등록된 모든 폴더의 파일과 폴더명을 한번에 변환 (폴더별 건수를 알림에 그대로 보여준다)
             lines = []
+            processed = 0
             for directory in self.watched_directories:
                 folder_name = os.path.basename(directory)
                 if not os.path.isdir(directory):
                     lines.append(f"{folder_name}: 폴더를 찾을 수 없음")
                     continue
-                lines.append(f"{folder_name}: {normalize_filenames_in_directory(directory)}개")
+                count = normalize_filenames_in_directory(directory)
+                processed += count
+                lines.append(f"{folder_name}: {count}개")
+
+            track('convert_once', watched_count=len(self.watched_directories),
+                  processed=processed, skipped=len(_failed_paths))
 
             failed_note = f"\n건너뛴 항목: {len(_failed_paths)}개 (권한 등으로 이름 변경 실패)" if _failed_paths else ""
             alert("변환 완료!\n\n" + "\n".join(lines) + f"{failed_note}\n\n모든 파일과 폴더명이 NFD에서 NFC로 변환되었습니다.", icon_path=self.icon_path)
@@ -442,22 +554,38 @@ class JasoRumpsApp(rumps.App):
     def _restore_state(self):
         # 메뉴는 run() 시점에 만들어지므로 __init__ 이 아니라 여기서 상태를 맞춘다.
         self.menu["로그인 시 자동실행"].state = autostart_enabled()
+        self.menu["사용 통계 보내기"].state = analytics_enabled()
 
         # 시작 시 복원은 조용히 — 로그인 자동실행 때 알림창이 뜨면 곤란하다.
         for directory in self._load_watched_directories():
             self._start_watching(directory)
+
+        track('app_start', watched_count=len(self.watched_directories),
+              autostart=autostart_enabled())
 
     @rumps.clicked("로그인 시 자동실행")
     def _toggle_autostart(self, sender):
         try:
             sender.state = 0 if sender.state else 1
             set_autostart(bool(sender.state))
+            track('autostart', enabled=bool(sender.state))
         except Exception as e:
             sender.state = autostart_enabled()
             report_error(e, self.icon_path, '자동실행 설정 실패')
 
+    @rumps.clicked("사용 통계 보내기")
+    def _toggle_analytics(self, sender):
+        try:
+            sender.state = 0 if sender.state else 1
+            set_analytics(bool(sender.state))
+            track('analytics_on')  # 끄는 쪽은 보내지 않는다 — 껐는데 한 건 나가면 그게 배신이다
+        except Exception as e:
+            sender.state = analytics_enabled()
+            report_error(e, self.icon_path, '사용 통계 설정 실패')
+
     @rumps.clicked("도움말", "개발자 정보")
     def _developer_info(self, _):
+        track('help')
         if not alert("개발자 정보", "임한솔\nmolmoty@gmail.com\nhttps://hsol.info",
                            ok="확인", cancel="홈페이지 열기"):
             webbrowser.open("https://hsol.info")
@@ -525,6 +653,22 @@ def _selfcheck():
     finally:
         rumps.alert = real_alert
 
+    # 사용 통계: 파일 하나로 켜고 끈다 (자동실행과 같은 방식)
+    with tempfile.TemporaryDirectory() as tmp:
+        off = os.path.join(tmp, ANALYTICS_OFF_FILE)
+        assert analytics_enabled(off), '기본값은 켜짐'
+        set_analytics(False, off)
+        assert not analytics_enabled(off)
+        set_analytics(True, off)
+        assert analytics_enabled(off)
+        set_analytics(True, off)  # 두 번 켜도 예외 없음
+
+    # 나가는 값에 개인 정보가 없어야 한다. 폴더 경로·파일명·사용자 이름이 새면 이 앱은 감시자가 된다.
+    body = json.dumps(ga_payload('folder_add', {'watched_count': 2}), ensure_ascii=False)
+    assert '"name": "folder_add"' in body and 'session_id' in body, body
+    assert os.path.expanduser('~') not in body, body
+    assert 'watched_count' in body and body.count('/') == 0, body
+
     _selfcheck_menu()
     print('OK:', launch_arguments())
     print('로그:', LOG_PATH)
@@ -534,7 +678,7 @@ def _selfcheck_menu():
     # 메뉴 조립 검증: 폴더 항목이 순서대로 들어가고, 하나만 빼도 나머지가 남는다.
     import tempfile
     app = JasoRumpsApp()
-    fixed = ['대상 폴더 선택', '로그인 시 자동실행', '도움말', '종료']
+    fixed = ['대상 폴더 선택', '로그인 시 자동실행', '사용 통계 보내기', '도움말', '종료']
     for title in fixed:  # run()이 데코레이터에서 만들어주는 고정 항목을 손으로 세운다
         app.menu.add(rumps.MenuItem(title))
 
@@ -587,6 +731,12 @@ def _selfcheck_menu():
 if __name__ == "__main__":
     if '--selfcheck' in sys.argv:
         _selfcheck()
+        raise SystemExit
+
+    if '--ga-test' in sys.argv:
+        # GA 디버그 엔드포인트로 한 건 보내고 검증 메시지를 그대로 보여준다.
+        # validationMessages가 비어 있으면 측정 ID·시크릿·페이로드가 모두 맞다는 뜻이다.
+        print(_post_event('app_start', {'watched_count': 0}, debug=True))
         raise SystemExit
 
     app = JasoRumpsApp()

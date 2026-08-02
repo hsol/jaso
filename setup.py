@@ -28,7 +28,8 @@ OPTIONS = {
         'LSMinimumSystemVersion': '11.0',
     },
     'packages': ['rumps', 'watchdog', 'AppKit', 'Foundation', 'objc'],
-    'includes': ['os', 'unicodedata', 'subprocess', 'imp'],
+    # ssl/urllib은 사용 통계 전송용. 번들에서 빠지면 통계만 조용히 죽어 눈치채기 어렵다.
+    'includes': ['os', 'unicodedata', 'subprocess', 'imp', 'ssl', 'json', 'urllib.request', 'uuid'],
     'excludes': ['matplotlib', 'numpy', 'scipy'],
 }
 
