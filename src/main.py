@@ -344,6 +344,19 @@ def normalize_filenames_in_directory(directory):
     return renamed_count
 
 
+def is_strictly_inside(path: str, root: str) -> bool:
+    # 감시 폴더 바깥과 감시 폴더 자신은 이벤트로 건드리지 않는다.
+    # FSEvents 는 감시 폴더의 상위 폴더(예: 구글 드라이브의 '공유 드라이브')로도 이벤트를 보내는데,
+    # 그 이름까지 rename 하려다 권한 에러가 반복됐다(2026-09-27 로그). 감시 폴더 자신의 이름을
+    # 바꾸면 저장된 감시 경로와 어긋나므로 그것도 제외한다.
+    # 이벤트 경로는 NFD 로 오고 저장된 경로는 NFC 일 수 있어 둘 다 NFC 로 맞춰 비교한다.
+    # 이벤트는 심볼릭 링크를 푼 실제 경로로 온다(/var -> /private/var). 감시 경로에 링크가 끼어
+    # 있으면 문자열이 어긋나 안쪽 이벤트까지 전부 버려지므로 양쪽 모두 realpath 로 맞춘다.
+    path = unicodedata.normalize('NFC', os.path.realpath(path))
+    root = unicodedata.normalize('NFC', os.path.realpath(root))
+    return path.startswith(root.rstrip(os.sep) + os.sep)
+
+
 class Watcher:
     # 파일 시스템의 변경을 감시하는 watchdog 클래스입니다.
     # Observer 하나에 여러 폴더를 걸 수 있으므로 폴더가 늘어도 감시 스레드는 하나뿐이다.
@@ -361,7 +374,7 @@ class Watcher:
             self.observer = Observer()
             self.observer.start()
 
-        self.watches[directory_to_watch] = self.observer.schedule(Handler(), directory_to_watch, recursive=True)
+        self.watches[directory_to_watch] = self.observer.schedule(Handler(directory_to_watch), directory_to_watch, recursive=True)
 
     def unwatch(self, directory_to_watch):
         # 이 경로만 뗀다 — 같은 Observer에 걸린 나머지 폴더의 감시는 그대로다.
@@ -386,8 +399,11 @@ class Watcher:
 
 class Handler(FileSystemEventHandler):
     # 파일 시스템 이벤트에 반응하여 적절한 조치를 취하는 이벤트 핸들러 클래스입니다.
-    @staticmethod
-    def on_any_event(event):
+    def __init__(self, root: str):
+        super().__init__()
+        self.root = root  # 이 핸들러가 맡은 감시 폴더. 이 폴더 안쪽만 처리한다
+
+    def on_any_event(self, event):
         # watchdog 감시 스레드로 예외가 빠져나가면 스레드가 죽어 감시가 조용히 멈춘다.
         # 이벤트 처리 중 무슨 일이 나든 여기서 막는다.
         try:
@@ -396,6 +412,9 @@ class Handler(FileSystemEventHandler):
             elif event.event_type in ('created', 'modified'):
                 path = event.src_path
             else:
+                return
+
+            if not is_strictly_inside(path, self.root):
                 return
 
             # 이벤트가 준 NFD 경로를 실제 저장된 이름으로 되돌린 뒤에 처리한다.
@@ -650,6 +669,21 @@ def _selfcheck():
         assert parse_watched_directories(f'{a}\n{a}') == [a], '중복 제거'
         assert parse_watched_directories('') == [], '빈 파일'
         assert parse_watched_directories('\n'.join([a, b])) == [a, b], '왕복'
+
+    # 이벤트 범위: 감시 폴더 안쪽만 처리하고, 상위 폴더와 감시 폴더 자신은 건너뛴다
+    root = unicodedata.normalize('NFC', '/드라이브/공유 드라이브/팀 프루퍼')
+    nfd = lambda s: unicodedata.normalize('NFD', s)
+    assert is_strictly_inside(nfd(root + '/문서.md'), root), '안쪽 파일(NFD 이벤트 경로)'
+    assert is_strictly_inside(root + '/a/b', root + '/'), '끝 슬래시가 붙은 감시 경로'
+    assert not is_strictly_inside(nfd('/드라이브/공유 드라이브'), root), '상위 폴더'
+    assert not is_strictly_inside(nfd(root), root), '감시 폴더 자신'
+    assert not is_strictly_inside(root + ' 백업/x', root), '이름이 앞부분만 같은 옆 폴더'
+    with tempfile.TemporaryDirectory() as tmp:
+        real = os.path.join(tmp, '실제')
+        link = os.path.join(tmp, '링크')
+        os.makedirs(real)
+        os.symlink(real, link)
+        assert is_strictly_inside(os.path.join(os.path.realpath(real), 'x'), link), '링크로 건 감시 경로'
 
     # openPanel()이 nil일 때 사용자에게 나가는 문구: 원인별로 갈리고, 파이썬 예외 문구가 새지 않는다
     with tempfile.TemporaryDirectory() as tmp:
