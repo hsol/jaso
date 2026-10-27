@@ -273,7 +273,18 @@ def normalize_path(path: str) -> bool:
 
     normalized_path = os.path.join(directory, normalized_name)
     os.rename(path, normalized_path)
+    # HFS+ 처럼 이름을 NFD 로 강제하는 볼륨에서는 rename 이 성공해도 저장된 이름이 NFD 로 남는다.
+    # 그대로 두면 rename -> 이벤트 -> rename 이 초당 150회쯤 돌며 바꾼 건수로 잡힌다
+    # (2026-10-27 HFS+ 디스크 이미지 실측, GA 하루 977만 건 급증의 원인). 바뀌지 않았으면 실패로 올려
+    # normalize_quietly 가 이 경로를 건너뛰게 한다.
+    stored = resolve_stored_path(normalized_path)
+    if stored is None or os.path.basename(stored) != normalized_name:
+        raise NFDForcedError(f'이 볼륨은 파일명을 NFD 로 강제합니다(HFS+ 등): {path}')
     return True
+
+
+class NFDForcedError(OSError):
+    pass
 
 
 def resolve_stored_path(path: str):
