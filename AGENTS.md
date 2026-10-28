@@ -50,6 +50,8 @@ PYTHONIOENCODING=utf-8 "dist/자소.app/Contents/MacOS/자소" --selfcheck   # �
 
 8. 사용 통계 — GA4 Measurement Protocol(`track()`)로 이벤트를 데몬 스레드에서 POST한다. 브라우저가 없으니 gtag.js는 못 쓴다. `Application Support/자소/analytics_off` 파일의 **존재 여부**가 곧 off(자동실행 plist와 같은 방식), `client_id`는 같은 폴더에 저장되는 설치별 임의 번호다.
 
+9. 새 버전 알림 — `_restore_state` 가 데몬 스레드(`_update_loop`)를 띄워 하루 한 번 GitHub 최신 릴리스 태그를 본다. 더 새 버전이면 `AppHelper.callAfter` 로 메인 스레드에서 `_show_update` 를 불러 도움말 위에 "새 버전 받기 (x.y.z)" 를 넣는다. 알림 배너는 버전마다 한 번(`Application Support/자소/notified_version`). 개발 실행(`dev`)은 비교에서 빠진다. 메인 런루프에 `rumps.Timer` 를 쓰지 않는다.
+
 폴더 선택과 시작 시 복원은 `_start_watching()` 하나를 공유한다. 감시 시작 로직을 고칠 때는 여기만 고치면 된다.
 
 ## 번들 런타임의 함정 (실측)

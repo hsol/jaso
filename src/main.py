@@ -148,17 +148,20 @@ def ga_payload(name, params):
                                    **params}}]}
 
 
+def ssl_context():
+    # py2app 번들의 ssl은 python.org 빌드의 CA 경로를 물려받는데 사용자 맥에는 그 경로가 없다.
+    # macOS가 늘 갖고 있는 루트 번들을 직접 쥐여준다(없으면 기본값).
+    cafile = '/etc/ssl/cert.pem'
+    return ssl.create_default_context(cafile=cafile if os.path.exists(cafile) else None)
+
+
 def _post_event(name, params, debug=False):
     request = urllib.request.Request(
         GA_URL.format(path='debug/mp/collect' if debug else 'mp/collect'),
         json.dumps(ga_payload(name, params)).encode('utf-8'),
         {'Content-Type': 'application/json'})
-    # py2app 번들의 ssl은 python.org 빌드의 CA 경로를 물려받는데 사용자 맥에는 그 경로가 없다.
-    # macOS가 늘 갖고 있는 루트 번들을 직접 쥐여준다(없으면 기본값).
-    cafile = '/etc/ssl/cert.pem'
-    context = ssl.create_default_context(cafile=cafile if os.path.exists(cafile) else None)
     try:
-        with urllib.request.urlopen(request, timeout=5, context=context) as response:
+        with urllib.request.urlopen(request, timeout=5, context=ssl_context()) as response:
             return response.status, response.read().decode('utf-8', 'replace')
     except Exception as e:
         print('사용 통계 전송 실패:', e)  # 통계는 실패해도 앱이 하는 일과 무관하다
@@ -206,6 +209,45 @@ WATCHED_DIRECTORY_FILE = 'watched_directory'
 
 # 감시 폴더 목록 위에 세우는 비활성 헤더. 제목이 곧 rumps 메뉴 키라서 개수를 넣지 않는다
 # (넣으면 폴더가 늘 때마다 키가 바뀐다). 바로 아래에 줄이 그만큼 보이므로 숫자는 중복이기도 하다.
+# ---- 새 버전 알림 ----
+# 자동 업데이트가 없어서 사용자 대부분이 받은 버전에 머문다(2026-10 GA 기준 거의 전원 0.3.0).
+# 하루에 한 번 GitHub 최신 릴리스를 보고, 더 새 버전이 있으면 메뉴에 받기 항목을 넣는다.
+# 보내는 것은 GitHub 로의 GET 요청뿐이고 사용자 정보는 싣지 않는다.
+RELEASES_API = 'https://api.github.com/repos/hsol/jaso/releases/latest'
+RELEASES_PAGE = 'https://github.com/hsol/jaso/releases/latest'
+UPDATE_INTERVAL = 24 * 3600
+NOTIFIED_VERSION_FILE = 'notified_version'  # 같은 버전 알림은 한 번만 띄운다
+
+
+def parse_version(text):
+    # 'v0.3.2', '0.3.2' -> (0, 3, 2). 'dev', '?', 형식이 다른 태그는 None
+    try:
+        parts = tuple(int(x) for x in str(text).strip().lstrip('vV').split('.'))
+    except ValueError:
+        return None
+    return parts or None
+
+
+def is_newer(latest, current) -> bool:
+    a, b = parse_version(latest), parse_version(current)
+    return a is not None and b is not None and a > b
+
+
+def fetch_latest_version():
+    request = urllib.request.Request(RELEASES_API, headers={
+        'Accept': 'application/vnd.github+json', 'User-Agent': 'jaso'})
+    try:
+        with urllib.request.urlopen(request, timeout=10, context=ssl_context()) as response:
+            return json.load(response).get('tag_name')
+    except Exception as e:
+        print('새 버전 확인 실패:', e)  # 오프라인이면 다음 날 다시 본다
+        return None
+
+
+def update_title(latest):
+    return f"새 버전 받기 ({str(latest).lstrip('vV')})"
+
+
 WATCH_HEADER = '감시 중인 폴더'
 
 
@@ -447,6 +489,8 @@ class JasoRumpsApp(rumps.App):
         self.icon_path = ICON_PATH
         self.watched_directories: list[str] = []
         self.convert_menu_item = None
+        self.update_menu_item = None
+        self.latest_version = None
 
     # 감시 폴더 기억: rumps가 만들어주는 Application Support 폴더에 한 줄에 하나씩 저장한다.
     # 번들의 기본 인코딩이 ASCII라 한글 경로가 깨지므로 반드시 바이너리 + utf-8 로 다룬다.
@@ -612,6 +656,49 @@ class JasoRumpsApp(rumps.App):
         track('app_start', watched_count=len(self.watched_directories),
               autostart=autostart_enabled())
 
+        threading.Thread(target=self._update_loop, daemon=True).start()
+
+    def _update_loop(self):
+        # 데몬 스레드에서 하루 한 번 본다. 메뉴는 메인 스레드에서만 고친다(AppKit 규칙).
+        # 메인 런루프에 rumps.Timer 를 걸지 않는다(81e3dfb8).
+        from PyObjCTools import AppHelper
+        while True:
+            latest = fetch_latest_version()
+            if latest and is_newer(latest, app_version()):
+                AppHelper.callAfter(self._show_update, latest)
+            time.sleep(UPDATE_INTERVAL)
+
+    def _show_update(self, latest, notify=True):
+        # 받기 항목은 도움말 바로 위에 둔다. 이미 있으면 버전만 바꾼다.
+        try:
+            if self.update_menu_item is None:
+                self.update_menu_item = rumps.MenuItem(update_title(latest), callback=self._open_update)
+                self.menu.insert_before("도움말", self.update_menu_item)
+            else:
+                self.update_menu_item.title = update_title(latest)
+            self.latest_version = latest
+            if not notify:
+                return
+
+            # 알림 배너는 버전마다 한 번. 모달 창이 아니라서 로그인 자동실행 때 떠도 작업을 막지 않는다.
+            notified = support_path(NOTIFIED_VERSION_FILE)
+            try:
+                with open(notified, 'rb') as f:
+                    if f.read().decode('utf-8').strip() == latest:
+                        return
+            except OSError:
+                pass
+            rumps.notification("자소", f"새 버전 {latest.lstrip('vV')} 이 나왔습니다",
+                               "메뉴의 '새 버전 받기' 를 눌러 내려받을 수 있습니다.")
+            with open(notified, 'wb') as f:
+                f.write(latest.encode('utf-8'))
+        except Exception:
+            traceback.print_exc()  # 알림이 실패해도 감시는 계속돼야 한다
+
+    def _open_update(self, _):
+        track('update_open', latest=self.latest_version or '')
+        webbrowser.open(RELEASES_PAGE)
+
     @rumps.clicked("로그인 시 자동실행")
     def _toggle_autostart(self, sender):
         try:
@@ -680,6 +767,14 @@ def _selfcheck():
         assert parse_watched_directories(f'{a}\n{a}') == [a], '중복 제거'
         assert parse_watched_directories('') == [], '빈 파일'
         assert parse_watched_directories('\n'.join([a, b])) == [a, b], '왕복'
+
+    # 새 버전 비교
+    assert parse_version('v0.3.2') == (0, 3, 2) and parse_version('0.10.0') == (0, 10, 0)
+    assert parse_version('dev') is None and parse_version('?') is None
+    assert is_newer('v0.3.3', '0.3.2') and is_newer('v0.10.0', '0.9.9'), '자릿수 비교'
+    assert not is_newer('v0.3.2', '0.3.2') and not is_newer('v0.3.1', '0.3.2'), '같거나 낮으면 아님'
+    assert not is_newer('v9.9.9', 'dev'), '개발 실행은 알리지 않는다'
+    assert update_title('v0.3.3') == '새 버전 받기 (0.3.3)'
 
     # 이벤트 범위: 감시 폴더 안쪽만 처리하고, 상위 폴더와 감시 폴더 자신은 건너뛴다
     root = unicodedata.normalize('NFC', '/드라이브/공유 드라이브/팀 프루퍼')
@@ -797,6 +892,15 @@ def _selfcheck_menu():
         assert [app.menu[a].title, app.menu[b].title] == ['사진', '사진'], '보이는 건 폴더 이름'
         assert list(app.menu[a]) == [a, '감시 해제'], '서브메뉴에 전체 경로'
         assert app.menu['대상 폴더 선택'].title == '폴더 추가'
+
+        # 새 버전 받기: 도움말 바로 위에 하나만 들어가고, 다시 불러도 늘지 않는다
+        app._show_update('v9.9.9', notify=False)
+        app._show_update('v9.9.10', notify=False)
+        titles = [app.menu[k].title for k in app.menu if not k.startswith('SeparatorMenuItem')]
+        assert titles.count('새 버전 받기 (9.9.10)') == 1, titles
+        assert titles.index('새 버전 받기 (9.9.10)') == titles.index('도움말') - 1, titles
+        del app.menu[update_title('v9.9.9')]  # 메뉴 키는 처음 넣을 때의 제목이다(rumps)
+        app.update_menu_item = None
 
         unwatch_a = app.menu[a]['감시 해제']
         unwatch_a.callback(unwatch_a)  # 메뉴를 클릭했을 때 rumps가 하는 것과 같은 호출
